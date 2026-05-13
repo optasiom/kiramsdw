@@ -2,19 +2,154 @@ import os
 import sys
 import zipfile
 import json
+import time
+import re
 from datetime import datetime
 import requests
-from duckduckgo_search import DDGS
+
+def search_duckduckgo_images(query, max_results=100):
+    """جستجوی تصاویر در DuckDuckGo با استفاده از API عمومی"""
+    
+    # DuckDuckGo API endpoint
+    url = "https://duckduckgo.com/"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://duckduckgo.com/',
+    }
+    
+    params = {
+        'q': query,
+        't': 'h_',
+        'iax': 'images',
+        'ia': 'images',
+        'format': 'json'
+    }
+    
+    try:
+        response = requests.get(url + 'lite/', params=params, headers=headers)
+        
+        # روش دوم: استفاده از API vqd
+        vqd_response = requests.post('https://duckduckgo.com/', data={'q': query}, headers=headers)
+        vqd_match = re.search(r'vqd=([\d-]+)&', vqd_response.text)
+        
+        if vqd_match:
+            vqd = vqd_match.group(1)
+            
+            images_url = "https://duckduckgo.com/i.js"
+            images_params = {
+                'q': query,
+                'vqd': vqd,
+                'iax': 'images',
+                'ia': 'images',
+                'p': '1',
+                's': '0',
+                'o': 'json'
+            }
+            
+            all_images = []
+            page = 0
+            
+            while len(all_images) < max_results:
+                images_params['s'] = page * 100
+                response = requests.get(images_url, params=images_params, headers=headers)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get('results', [])
+                    
+                    if not results:
+                        break
+                    
+                    for result in results:
+                        image_url = result.get('image')
+                        if image_url and image_url.startswith('http'):
+                            all_images.append({
+                                'image': image_url,
+                                'thumbnail': result.get('thumbnail', ''),
+                                'title': result.get('title', ''),
+                                'source': result.get('source', '')
+                            })
+                    
+                    if len(results) < 100:
+                        break
+                    
+                    page += 1
+                    time.sleep(0.5)
+                else:
+                    break
+            
+            return all_images[:max_results]
+        
+        return []
+        
+    except Exception as e:
+        print(f"خطا در جستجو: {e}")
+        return []
+
+def download_image(url, save_path, timeout=30):
+    """دانلود تصویر از URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        
+        if response.status_code == 200:
+            # تشخیص نوع محتوا
+            content_type = response.headers.get('content-type', '')
+            if 'image' in content_type:
+                # استخراج پسوند از URL یا content-type
+                extension = 'jpg'
+                if 'png' in content_type:
+                    extension = 'png'
+                elif 'webp' in content_type:
+                    extension = 'webp'
+                elif 'gif' in content_type:
+                    extension = 'gif'
+                elif 'jpeg' in content_type:
+                    extension = 'jpeg'
+                
+                # یا از URL
+                if '.' in url:
+                    url_ext = url.split('.')[-1].split('?')[0].lower()
+                    if url_ext in ['jpg', 'jpeg', 'png', 'webp', 'gif']:
+                        extension = url_ext
+                
+                save_path = save_path.rsplit('.', 1)[0] + '.' + extension
+                
+                with open(save_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                return True, extension
+            else:
+                return False, None
+        else:
+            return False, None
+    except Exception as e:
+        print(f"خطا در دانلود: {e}")
+        return False, None
+
+def create_zip(folder_path, query, downloaded_count):
+    """ایجاد فایل Zip"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_query = "".join(c for c in query if c.isalnum() or c in "._- ")[:30]
+    zip_name = f"{safe_query}_{downloaded_count}images_{timestamp}.zip"
+    zip_path = os.path.join(folder_path, zip_name)
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for file in os.listdir(folder_path):
+            if file.startswith('img_') and file.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')):
+                file_path = os.path.join(folder_path, file)
+                zipf.write(file_path, file)
+    
+    return zip_path
 
 def search_and_download_images(query, target_count, quality="high"):
-    """
-    جستجو و دانلود تصاویر از DuckDuckGo
+    """جستجو و دانلود تصاویر"""
     
-    Args:
-        query: عبارت جستجو
-        target_count: تعداد تصاویر مورد نظر
-        quality: کیفیت تصاویر (high/medium)
-    """
     print(f"🔍 شروع جستجو در DuckDuckGo: {query}")
     print(f"🎯 تعداد هدف: {target_count} تصویر")
     
@@ -22,150 +157,77 @@ def search_and_download_images(query, target_count, quality="high"):
     download_dir = "downloads"
     os.makedirs(download_dir, exist_ok=True)
     
-    # پوشه موقت با timestamp
+    # پوشه موقت
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     images_folder = os.path.join(download_dir, f"temp_{timestamp}")
     os.makedirs(images_folder, exist_ok=True)
     
-    downloaded_count = 0
-    failed_count = 0
-    all_results = []
+    # جستجو
+    print("🔄 در حال جستجو...")
+    results = search_duckduckgo_images(query, target_count)
     
-    try:
-        # استفاده از DDGS برای جستجو
-        with DDGS() as ddgs:
-            print("🔄 در حال جستجو...")
-            
-            # دریافت نتایج تصاویر
-            results = ddgs.images(
-                keywords=query,
-                region="wt-wt",  # Worldwide
-                safesearch="off",  # خاموش کردن فیلتر ایمن
-                max_results=target_count,  # تعداد دقیق مورد نظر
-                size="Wallpaper" if quality == "high" else None,  # کیفیت بالا
-            )
-            
-            # تبدیل به لیست برای شمارش
-            results_list = list(results)
-            total_found = len(results_list)
-            print(f"📸 {total_found} تصویر پیدا شد!")
-            
-            # دانلود تصاویر
-            for idx, result in enumerate(results_list[:target_count]):
-                try:
-                    # دریافت لینک تصویر (کیفیت اصلی)
-                    img_url = result.get('image')
-                    if not img_url:
-                        img_url = result.get('thumbnail')
-                    
-                    if img_url:
-                        # تشخیص پسوند فایل
-                        extension = img_url.split('.')[-1].split('?')[0].lower()
-                        if extension not in ['jpg', 'jpeg', 'png', 'webp', 'gif']:
-                            extension = 'jpg'
-                        
-                        filename = f"image_{idx+1:04d}.{extension}"
-                        save_path = os.path.join(images_folder, filename)
-                        
-                        # دانلود تصویر
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                        }
-                        
-                        response = requests.get(img_url, headers=headers, timeout=30, stream=True)
-                        
-                        if response.status_code == 200:
-                            with open(save_path, 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                            
-                            downloaded_count += 1
-                            print(f"✅ [{downloaded_count}/{target_count}] دانلود شد: {filename}")
-                            
-                            # ذخیره اطلاعات برای گزارش
-                            all_results.append({
-                                'index': idx + 1,
-                                'url': img_url,
-                                'title': result.get('title', ''),
-                                'source': result.get('source', ''),
-                                'filename': filename
-                            })
-                        else:
-                            failed_count += 1
-                            print(f"❌ دانلود ناموفق: HTTP {response.status_code}")
-                    else:
-                        failed_count += 1
-                        print(f"⚠️ لینک معتبر یافت نشد برای تصویر {idx+1}")
-                    
-                    # تاخیر بین دانلودها
-                    if idx < target_count - 1:
-                        import time
-                        time.sleep(0.5)
-                        
-                except Exception as e:
-                    failed_count += 1
-                    print(f"❌ خطا در دانلود تصویر {idx+1}: {e}")
-            
-    except Exception as e:
-        print(f"💥 خطا در جستجو: {e}")
+    if not results:
+        print("❌ هیچ نتیجه‌ای پیدا نشد!")
         return None, 0, 0
     
-    # ایجاد فایل Zip
-    if downloaded_count > 0:
-        print(f"\n📦 ایجاد فایل Zip...")
-        safe_query = "".join(c for c in query if c.isalnum() or c in "._- ")[:30]
-        zip_name = f"{safe_query}_{downloaded_count}images_{timestamp}.zip"
-        zip_path = os.path.join(download_dir, zip_name)
+    print(f"📸 {len(results)} تصویر پیدا شد!")
+    
+    # دانلود
+    downloaded = 0
+    failed = 0
+    
+    for idx, result in enumerate(results[:target_count]):
+        img_url = result.get('image')
         
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, dirs, files in os.walk(images_folder):
-                for file in files:
-                    if file.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')):
-                        file_path = os.path.join(root, file)
-                        zipf.write(file_path, file)
+        if img_url:
+            filename = f"img_{idx+1:04d}"
+            temp_path = os.path.join(images_folder, filename)
+            
+            success, ext = download_image(img_url, temp_path)
+            
+            if success:
+                # rename with correct extension
+                final_path = os.path.join(images_folder, f"img_{idx+1:04d}.{ext}")
+                os.rename(f"{temp_path}.{ext}", final_path)
+                downloaded += 1
+                print(f"✅ [{downloaded}/{target_count}] دانلود شد: img_{idx+1:04d}.{ext}")
+            else:
+                failed += 1
+                print(f"❌ دانلود ناموفق: تصویر {idx+1}")
+        else:
+            failed += 1
+            print(f"⚠️ لینک معتبر یافت نشد: تصویر {idx+1}")
+        
+        # تاخیر بین دانلودها
+        if idx < target_count - 1:
+            time.sleep(0.5)
+    
+    # ایجاد Zip
+    if downloaded > 0:
+        print(f"\n📦 ایجاد فایل Zip...")
+        zip_path = create_zip(images_folder, query, downloaded)
+        print(f"✅ Zip ایجاد شد: {zip_path}")
         
         # حذف پوشه موقت
         import shutil
         shutil.rmtree(images_folder)
         
-        # ذخیره گزارش JSON
-        report_data = {
-            'search_query': query,
-            'target_count': target_count,
-            'downloaded_count': downloaded_count,
-            'failed_count': failed_count,
-            'quality': quality,
-            'date': datetime.now().isoformat(),
-            'results': all_results
-        }
-        
-        report_path = os.path.join(download_dir, f"report_{timestamp}.json")
-        with open(report_path, 'w', encoding='utf-8') as f:
-            json.dump(report_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"✅ Zip ایجاد شد: {zip_path}")
-        print(f"📊 گزارش ذخیره شد: {report_path}")
-        
-        return zip_path, downloaded_count, failed_count
+        return zip_path, downloaded, failed
     else:
         print("❌ هیچ تصویری دانلود نشد!")
-        return None, 0, failed_count
+        return None, 0, failed
 
 def main():
-    # دریافت پارامترها
     if len(sys.argv) < 3:
         print("Usage: python google_images_downloader.py <search_query> <num_images> [quality]")
-        print("Example: python google_images_downloader.py 'cat' 50 high")
         sys.exit(1)
     
     search_query = sys.argv[1]
     target_count = int(sys.argv[2])
     quality = sys.argv[3] if len(sys.argv) > 3 else "high"
     
-    # اجرای جستجو و دانلود
     zip_path, downloaded, failed = search_and_download_images(search_query, target_count, quality)
     
-    # گزارش نهایی
     print("\n" + "="*50)
     print("📊 گزارش نهایی:")
     print(f"✅ دانلود موفق: {downloaded}")

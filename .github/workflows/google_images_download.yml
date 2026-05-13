@@ -37,7 +37,7 @@ jobs:
     - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install duckduckgo-search requests
     
     - name: Run DuckDuckGo image downloader
       env:
@@ -64,12 +64,3 @@ jobs:
         path: downloads/*.json
         retention-days: 7
         if-no-files-found: warn
-    
-    - name: Commit files to repository
-      if: success()
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add downloads/*.zip downloads/*.json 2>/dev/null || true
-        git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }}" || echo "No new images to commit"
-        git push || echo "Push skipped"

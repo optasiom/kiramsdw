@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: 'عبارت جستجو (مثال: "cat" یا "mountain landscape")'
+        description: 'عبارت جستجو'
         required: true
         type: string
       num_images:
@@ -12,14 +12,6 @@ on:
         required: true
         default: '50'
         type: string
-      quality:
-        description: 'کیفیت تصاویر (high/medium)'
-        required: false
-        default: 'high'
-        type: choice
-        options:
-          - high
-          - medium
 
 jobs:
   download-images:
@@ -29,7 +21,6 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Setup Python
@@ -37,58 +28,21 @@ jobs:
       with:
         python-version: '3.10'
     
-    - name: Install dependencies
+    - name: Install BBID (Bulk Bing Image Downloader)
       run: |
         pip install --upgrade pip
-        pip install bing-image-downloader
+        pip install bbid
     
-    - name: Run Bing image downloader
-      env:
-        SEARCH_QUERY: ${{ github.event.inputs.search_query }}
-        NUM_IMAGES: ${{ github.event.inputs.num_images }}
-        QUALITY: ${{ github.event.inputs.quality }}
+    - name: Run image downloader
       run: |
-        python google_images_downloader.py "$SEARCH_QUERY" "$NUM_IMAGES" "$QUALITY"
+        python google_images_downloader.py "${{ github.event.inputs.search_query }}" "${{ github.event.inputs.num_images }}"
     
-    - name: List downloaded files (برای دیباگ)
+    - name: Commit and push to repository
       run: |
-        echo "=== محتویات پوشه downloads ==="
-        ls -la downloads/ || echo "پوشه downloads وجود ندارد"
-        echo "=== محتویات پوشه images ==="
-        ls -la images/ || echo "پوشه images وجود ندارد"
-        echo "=== فایل‌های Zip پیدا شده ==="
-        find . -name "*.zip" -type f
-    
-    - name: Commit and push images to repository
-      run: |
-        # تنظیم git
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        
-        # اضافه کردن پوشه‌ها به git (حتی اگر خالی باشند)
-        mkdir -p images downloads
-        git add images/ downloads/ *.zip 2>/dev/null || true
-        
-        # بررسی وضعیت git
-        git status
-        
-        # اگر تغییری وجود داشت، commit و push کن
-        if git diff --cached --quiet; then
-          echo "ℹ️ هیچ فایل جدیدی برای commit وجود ندارد"
-        else
-          echo "✅ فایل‌های جدید پیدا شدند، در حال commit..."
-          git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }} [skip ci]"
-          git push origin HEAD:${{ github.ref_name }}
-          echo "✅ تغییرات با موفقیت push شد"
+        git add images/ downloads/ 2>/dev/null || true
+        if ! git diff --cached --quiet; then
+          git commit -m "Add images for: ${{ github.event.inputs.search_query }} [skip ci]"
+          git push
         fi
-    
-    - name: Upload images as artifact (اختیاری - اگر می‌خواهید artifact هم داشته باشید)
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: bing-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
-        path: |
-          downloads/*.zip
-          images/
-        retention-days: 7
-        if-no-files-found: warn

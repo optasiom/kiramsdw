@@ -1,10 +1,10 @@
-name: Google Images Downloader
+name: DuckDuckGo Image Downloader
 
 on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: 'عبارت جستجو (مثال: "cat" یا "mountain")'
+        description: 'عبارت جستجو (مثال: "cat" یا "mountain landscape")'
         required: true
         type: string
       num_images:
@@ -34,32 +34,12 @@ jobs:
       with:
         python-version: '3.10'
     
-    - name: Install Chrome and ChromeDriver
-      run: |
-        # نصب Google Chrome
-        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
-        sudo apt-get update
-        sudo apt-get install -y google-chrome-stable
-        
-        # نصب ChromeDriver
-        CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
-        CHROME_MAJOR_VERSION=${CHROME_VERSION%.*}
-        wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
-        unzip -q chromedriver-linux64.zip
-        sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
-        sudo chmod +x /usr/local/bin/chromedriver
-        
-        # نمایش نسخه‌ها برای اطمینان
-        google-chrome --version
-        chromedriver --version
-    
-    - name: Install Python dependencies
+    - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install selenium requests
+        pip install -r requirements.txt
     
-    - name: Run Google Images scraper
+    - name: Run DuckDuckGo image downloader
       env:
         SEARCH_QUERY: ${{ github.event.inputs.search_query }}
         NUM_IMAGES: ${{ github.event.inputs.num_images }}
@@ -71,16 +51,25 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: google-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
+        name: duckduckgo-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
         path: downloads/*.zip
         retention-days: 7
         if-no-files-found: warn
     
-    - name: Commit and push to repository
+    - name: Upload report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: report-${{ github.event.inputs.search_query }}-${{ github.run_number }}
+        path: downloads/*.json
+        retention-days: 7
+        if-no-files-found: warn
+    
+    - name: Commit files to repository
       if: success()
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add downloads/*.zip downloads/*.txt 2>/dev/null || true
+        git add downloads/*.zip downloads/*.json 2>/dev/null || true
         git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }}" || echo "No new images to commit"
         git push || echo "Push skipped"

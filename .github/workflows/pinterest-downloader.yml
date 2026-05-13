@@ -1,7 +1,6 @@
 name: Pinterest Image Downloader - Save to Repository
 
 on:
-  # اجرای دستی
   workflow_dispatch:
     inputs:
       search_query:
@@ -12,7 +11,7 @@ on:
       max_results:
         description: 'تعداد عکس مورد نظر'
         required: true
-        default: 50
+        default: 20
         type: number
       image_quality:
         description: 'کیفیت تصاویر'
@@ -22,174 +21,311 @@ on:
         options:
           - '736x'
           - '564x'
-      zip_filename:
-        description: 'نام فایل ZIP خروجی'
-        required: true
-        default: 'pinterest_images.zip'
-        type: string
-
-  # اجرای برنامه‌ریزی شده هر روز
-  schedule:
-    - cron: '0 8 * * *'
 
 jobs:
   download-and-save:
     runs-on: ubuntu-latest
-    
-    # دسترسی لازم برای push به ریپازیتوری
     permissions:
       contents: write
     
     steps:
-      # 1. Checkout مخزن
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
         with:
-          # مهم: برای push بعدی نیاز به توکن کامل است
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. نصب Python
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. نصب وابستگی‌ها
       - name: 📦 Install dependencies
         run: |
+          pip install --upgrade pip
           pip install requests aiohttp aiofiles
 
-      # 4. ایجاد اسکریپت دانلودر
       - name: 🔧 Create downloader script
         run: |
-          cat > pinterest_downloader.py << 'EOF'
-          # [کد کامل دانلودر که در ادامه می‌آید]
-          EOF
+          cat > pinterest_downloader.py << 'PYTHON_SCRIPT'
+          #!/usr/bin/env python3
+          """Pinterest Image Downloader - Fixed Version"""
+          
+          import json
+          import time
+          import random
+          import os
+          import asyncio
+          import aiohttp
+          import aiofiles
+          from pathlib import Path
+          import requests
+          
+          class Config:
+              SEARCH_QUERY = os.environ.get('PINTEREST_SEARCH', 'modern architecture')
+              MAX_RESULTS = int(os.environ.get('PINTEREST_MAX_RESULTS', 20))
+              IMAGE_QUALITY = os.environ.get('PINTEREST_QUALITY', '736x')
+              DELAY_BETWEEN_PAGES = (3, 5)
+              DELAY_BETWEEN_DOWNLOADS = (1, 2)
+              DOWNLOAD_DIR = "downloads"
+              USER_AGENTS = [
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+              ]
+          
+          class PinterestExtractor:
+              def __init__(self):
+                  self.session = requests.Session()
+                  self.csrf_token = None
+              
+              def _get_headers(self, is_api=False):
+                  headers = {
+                      "User-Agent": random.choice(Config.USER_AGENTS),
+                      "Accept": "application/json, text/javascript, */*; q=0.01",
+                      "Accept-Language": "en-US,en;q=0.9",
+                      "Referer": "https://www.pinterest.com/",
+                  }
+                  if is_api and self.csrf_token:
+                      headers["X-CSRFToken"] = self.csrf_token
+                      headers["X-Requested-With"] = "XMLHttpRequest"
+                  return headers
+              
+              def search(self, query, max_results):
+                  print(f"🔍 Searching: {query}")
+                  
+                  # دریافت کوکی اولیه
+                  try:
+                      resp = self.session.get("https://www.pinterest.com/", headers=self._get_headers(), timeout=20)
+                      self.csrf_token = self.session.cookies.get("csrftoken", "")
+                  except Exception as e:
+                      print(f"❌ Session error: {e}")
+                      return []
+                  
+                  pins = []
+                  bookmark = ""
+                  page = 0
+                  
+                  while len(pins) < max_results and page < 10:
+                      page += 1
+                      print(f"📄 Page {page}...")
+                      
+                      payload = {
+                          "options": {
+                              "query": query,
+                              "scope": "pins",
+                              "bookmarks": [bookmark] if bookmark else [],
+                              "page_size": min(25, max_results - len(pins))
+                          }
+                      }
+                      
+                      params = {
+                          "source_url": f"/search/pins/?q={query}",
+                          "data": json.dumps(payload),
+                      }
+                      
+                      time.sleep(random.uniform(*Config.DELAY_BETWEEN_PAGES))
+                      
+                      try:
+                          resp = self.session.get(
+                              "https://www.pinterest.com/resource/BaseSearchResource/get/",
+                              headers=self._get_headers(is_api=True),
+                              params=params,
+                              timeout=20
+                          )
+                          
+                          if resp.status_code == 429:
+                              print("⚠️ Rate limit, waiting...")
+                              time.sleep(30)
+                              continue
+                          
+                          if resp.status_code != 200:
+                              print(f"❌ HTTP {resp.status_code}")
+                              break
+                          
+                          data = resp.json()
+                          results = data.get("resource_response", {}).get("data", {})
+                          items = results.get("results", [])
+                          
+                          if not items:
+                              break
+                          
+                          for item in items:
+                              images = item.get("images", {})
+                              url = None
+                              
+                              if Config.IMAGE_QUALITY in images:
+                                  url = images[Config.IMAGE_QUALITY].get("url")
+                              if not url and "736x" in images:
+                                  url = images["736x"].get("url")
+                              if not url and "564x" in images:
+                                  url = images["564x"].get("url")
+                              
+                              if url:
+                                  pins.append({
+                                      "id": item.get("id"),
+                                      "url": url,
+                                      "desc": (item.get("description") or "no_desc")[:40]
+                                  })
+                                  if len(pins) >= max_results:
+                                      break
+                          
+                          bookmark = data.get("resource_response", {}).get("bookmark", "")
+                          if not bookmark:
+                              break
+                              
+                      except Exception as e:
+                          print(f"❌ Error: {e}")
+                          break
+                  
+                  print(f"✅ Found {len(pins)} images")
+                  return pins
+          
+          class PinterestDownloader:
+              def __init__(self):
+                  self.downloaded = 0
+              
+              async def download(self, pins):
+                  # ایجاد پوشه
+                  Path(Config.DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
+                  
+                  print(f"\n🚀 Downloading {len(pins)} images...")
+                  
+                  connector = aiohttp.TCPConnector(limit=3)
+                  async with aiohttp.ClientSession(connector=connector) as session:
+                      for idx, pin in enumerate(pins, 1):
+                          url = pin.get("url")
+                          if not url:
+                              continue
+                          
+                          desc = pin.get("desc", "no_desc").replace('/', '_').replace('\\', '_')
+                          filename = f"{idx:04d}_{desc}.jpg"
+                          filepath = os.path.join(Config.DOWNLOAD_DIR, filename)
+                          
+                          await asyncio.sleep(random.uniform(*Config.DELAY_BETWEEN_DOWNLOADS))
+                          
+                          headers = {"User-Agent": random.choice(Config.USER_AGENTS)}
+                          
+                          try:
+                              async with session.get(url, headers=headers, timeout=30) as resp:
+                                  if resp.status == 200:
+                                      content = await resp.read()
+                                      if len(content) > 5000:
+                                          async with aiofiles.open(filepath, 'wb') as f:
+                                              await f.write(content)
+                                          self.downloaded += 1
+                                          print(f"✅ [{idx}] {filename}")
+                          except Exception as e:
+                              print(f"❌ [{idx}] Failed: {str(e)[:30]}")
+                  
+                  print(f"\n✅ Downloaded: {self.downloaded}/{len(pins)}")
+                  return self.downloaded
+          
+          async def main():
+              print("="*50)
+              print("🎨 Pinterest Downloader")
+              print("="*50)
+              print(f"Query: {Config.SEARCH_QUERY}")
+              print(f"Target: {Config.MAX_RESULTS} images")
+              print("="*50)
+              
+              # استخراج
+              extractor = PinterestExtractor()
+              pins = extractor.search(Config.SEARCH_QUERY, Config.MAX_RESULTS)
+              
+              if not pins:
+                  print("❌ No images found!")
+                  # ایجاد فایل خالی برای جلوگیری از خطا
+                  Path(Config.DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
+                  with open(os.path.join(Config.DOWNLOAD_DIR, "no_results.txt"), "w") as f:
+                      f.write("No images were found for this search query.")
+                  return
+              
+              # ذخیره متادیتا
+              with open("pins_metadata.json", "w") as f:
+                  json.dump(pins, f, indent=2)
+              
+              # دانلود
+              downloader = PinterestDownloader()
+              downloaded = await downloader.download(pins)
+              
+              print(f"\n🎉 Complete! {downloaded} images saved in '{Config.DOWNLOAD_DIR}/'")
+          
+          if __name__ == "__main__":
+              asyncio.run(main())
+          PYTHON_SCRIPT
 
-      # 5. اجرای دانلودر
       - name: 🚀 Run Pinterest Downloader
         run: |
+          export PINTEREST_SEARCH="${{ github.event.inputs.search_query }}"
+          export PINTEREST_MAX_RESULTS="${{ github.event.inputs.max_results }}"
+          export PINTEREST_QUALITY="${{ github.event.inputs.image_quality }}"
+          
           python pinterest_downloader.py
-        env:
-          PINTEREST_SEARCH: ${{ github.event.inputs.search_query }}
-          PINTEREST_MAX_RESULTS: ${{ github.event.inputs.max_results }}
-          PINTEREST_QUALITY: ${{ github.event.inputs.image_quality }}
+          
+          # نمایش محتویات پوشه برای دیباگ
+          echo "=== Contents of downloads folder ==="
+          ls -la downloads/ || echo "downloads folder not found"
+          echo "===================================="
 
-      # 6. ایجاد فایل ZIP
       - name: 📦 Create ZIP archive
         run: |
-          ZIP_NAME="${{ github.event.inputs.zip_filename || 'pinterest_images.zip' }}"
-          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-          
-          # ایجاد ZIP از پوشه دانلودها
-          zip -r "$ZIP_NAME" downloads/ -x "*.DS_Store"
-          
-          # ایجاد فایل متادیتا
-          cat > download_info.txt << EOF
-          Pinterest Download Information
-          ================================
-          Date: $(date)
-          Search Query: ${{ github.event.inputs.search_query || 'modern architecture' }}
-          Total Images: $(find downloads -type f -name "*.jpg" | wc -l)
-          Quality: ${{ github.event.inputs.image_quality || '736x' }}
-          Repository: ${{ github.repository }}
-          Workflow Run: ${{ github.run_id }}
-          EOF
-          
-          # اضافه کردن متادیتا به ZIP
-          zip -u "$ZIP_NAME" download_info.txt
-          
-          # نمایش حجم فایل
-          ls -lh "$ZIP_NAME"
-
-      # 7. ذخیره در ریپازیتوری (با تاریخ)
-      - name: 💾 Save to repository with timestamp
-        run: |
-          # ایجاد نام فایل با زمان‌سنج
-          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
-          FINAL_NAME="pinterest_${TIMESTAMP}_${{ github.event.inputs.zip_filename || 'images.zip' }}"
-          
-          # اگر ورودی دستی نبود از نام پیش‌فرض استفاده کن
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            FINAL_NAME="pinterest_scheduled_${TIMESTAMP}.zip"
+          # بررسی وجود فایل
+          if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
+            ZIP_NAME="pinterest_images_$(date +'%Y%m%d_%H%M%S').zip"
+            echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+            
+            # ایجاد ZIP
+            zip -r "$ZIP_NAME" downloads/
+            
+            # نمایش اطلاعات
+            echo "✅ ZIP created: $ZIP_NAME"
+            ls -lh "$ZIP_NAME"
+          else
+            echo "⚠️ No images to zip! Creating placeholder..."
+            mkdir -p downloads
+            echo "No images were downloaded. Please check the search query or try again later." > downloads/README.txt
+            ZIP_NAME="empty_result_$(date +'%Y%m%d_%H%M%S').zip"
+            echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+            zip -r "$ZIP_NAME" downloads/
           fi
-          
-          # کپی فایل ZIP با نام جدید
-          cp "${{ env.ZIP_NAME }}" "$FINAL_NAME"
-          
-          # ایجاد یا به‌روزرسانی فایل latest.zip
-          cp "$FINAL_NAME" "latest_pinterest_images.zip"
-          
-          # حذف ZIP قدیمی (فقط 5 نسخه آخر نگهداری شود)
-          ls -t pinterest_*.zip 2>/dev/null | tail -n +6 | xargs -r rm
-          
-          echo "FINAL_ZIP=$FINAL_NAME" >> $GITHUB_ENV
-          echo "✅ ZIP created: $FINAL_NAME"
 
-      # 8. Commit و Push به ریپازیتوری
-      - name: 📤 Commit and push to repository
+      - name: 💾 Commit and push to repository
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
           # اضافه کردن فایل‌ها
-          git add "${{ env.FINAL_ZIP }}" || true
-          git add "latest_pinterest_images.zip" || true
-          git add download_info.txt || true
+          git add "${{ env.ZIP_NAME }}" || true
+          git add downloads/ || true
           
-          # ایجاد commit message
-          git commit -m "📸 Pinterest images: ${{ github.event.inputs.search_query || 'scheduled' }} (${GITHUB_RUN_ID})" || echo "No changes to commit"
-          
-          # Push به مخزن
-          git push origin HEAD:${{ github.ref_name }}
-          
-          echo "✅ Files pushed to repository"
+          # ایجاد commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📸 Pinterest images: ${{ github.event.inputs.search_query }} (${GITHUB_RUN_ID})"
+            git push origin HEAD:${{ github.ref_name }}
+            echo "✅ Files pushed to repository"
+          fi
 
-      # 9. ایجاد Summary
-      - name: 📊 Generate job summary
+      - name: 📊 Generate summary
+        if: always()
         run: |
-          TOTAL_IMAGES=$(find downloads -type f -name "*.jpg" | wc -l)
-          ZIP_SIZE=$(du -h "${{ env.FINAL_ZIP }}" | cut -f1)
+          IMAGE_COUNT=$(find downloads -type f -name "*.jpg" 2>/dev/null | wc -l)
           
           cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## 🎉 Pinterest Download Complete!
+          ## 🎉 Pinterest Download Results
           
           | آیتم | مقدار |
           |------|-------|
-          | 🔍 عبارت جستجو | ${{ github.event.inputs.search_query || 'modern architecture' }} |
-          | 🖼️ تعداد تصاویر | $TOTAL_IMAGES |
-          | 📦 حجم فایل ZIP | $ZIP_SIZE |
-          | 💾 نام فایل | \`${{ env.FINAL_ZIP }}\` |
-          | 📁 مسیر در ریپازیتوری | [دانلود فایل](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/${{ env.FINAL_ZIP }}) |
-          | 🔗 آخرین نسخه | \`latest_pinterest_images.zip\` |
+          | 🔍 عبارت جستجو | ${{ github.event.inputs.search_query }} |
+          | 🖼️ تعداد تصاویر دانلود شده | $IMAGE_COUNT |
+          | 📦 فایل ZIP | \`${{ env.ZIP_NAME }}\` |
+          | 🔗 لینک دانلود | [Click here to download](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/${{ env.ZIP_NAME }}) |
           
           ### 📥 نحوه دانلود
-          1. به ریپازیتوری خود بروید
-          2. فایل \`${{ env.FINAL_ZIP }}\` را پیدا کنید
-          3. روی آن کلیک کرده و **Download** را بزنید
+          1. روی لینک بالا کلیک کنید
+          2. روی دکمه **Download** کلیک کنید
+          3. فایل را از حالت ZIP خارج کنید
           
           ---
-          *این فایل به صورت خودکار توسط GitHub Actions تولید شده است*
+          *این فایل به صورت خودکار تولید شده است*
           EOF
-
-      # 10. اطلاع‌رسانی (اختیاری)
-      - name: 🔔 Create issue on success (optional)
-        if: success() && github.event_name == 'workflow_dispatch'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const totalImages = fs.readdirSync('downloads').filter(f => f.endsWith('.jpg')).length;
-            
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `✅ Pinterest Download Complete: ${totalImages} images`,
-              body: `تصاویر با موفقیت دانلود و در ریپازیتوری ذخیره شدند.
-              
-              🔍 عبارت جستجو: ${{ github.event.inputs.search_query }}
-              🖼️ تعداد: ${totalImages}
-              📁 فایل ZIP: \`${{ env.FINAL_ZIP }}\`
-              
-              برای دانلود فایل به [این لینک](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/${{ env.FINAL_ZIP }}) مراجعه کنید.`
-            });

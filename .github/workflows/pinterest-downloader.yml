@@ -1,4 +1,4 @@
-name: Pinterest Chrome Downloader - Final Working Version
+name: Pinterest Chrome Downloader - Version Fixed
 
 on:
   workflow_dispatch:
@@ -36,22 +36,30 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🔧 Install Chrome and ChromeDriver
+      - name: 🔧 Install Chrome and matching ChromeDriver
         run: |
-          # نصب Google Chrome
+          # نصب Google Chrome آخرین نسخه
           wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
           
-          # نصب ChromeDriver با نسخه مناسب
-          CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
+          # دریافت نسخه دقیق Chrome
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
           echo "Chrome version: $CHROME_VERSION"
           
-          # دانلود ChromeDriver متناسب با Chrome
+          # استخراج نسخه اصلی (مثل 148)
+          CHROME_MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d. -f1)
+          echo "Chrome major version: $CHROME_MAJOR_VERSION"
+          
+          # دانلود ChromeDriver متناسب با نسخه Chrome
+          # استفاده از Chrome for Testing API برای دریافت نسخه مناسب
+          wget "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" || \
+          wget "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_MAJOR_VERSION}.0.0.0/linux64/chromedriver-linux64.zip" || \
           wget "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/134.0.6998.88/linux64/chromedriver-linux64.zip"
+          
           unzip chromedriver-linux64.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/ || sudo mv chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
           
           # بررسی نصب
@@ -60,22 +68,20 @@ jobs:
 
       - name: 📦 Install Python dependencies
         run: |
-          pip install selenium webdriver-manager requests beautifulsoup4
+          pip install selenium webdriver-manager requests
 
-      - name: 🚀 Create and Run Pinterest Scraper
+      - name: 🚀 Run Pinterest Scraper
         run: |
-          cat > pinterest_scraper.py << 'EOF'
+          cat > pinterest_final.py << 'EOF'
           import os
           import time
           import json
           import requests
           from urllib.parse import quote_plus
           from selenium import webdriver
-          from selenium.webdriver.common.by import By
           from selenium.webdriver.chrome.options import Options
           from selenium.webdriver.chrome.service import Service
-          from selenium.webdriver.support.ui import WebDriverWait
-          from selenium.webdriver.support import expected_conditions as EC
+          from selenium.webdriver.common.by import By
           from concurrent.futures import ThreadPoolExecutor
           
           SEARCH_TERM = "${{ github.event.inputs.search_query }}"
@@ -87,7 +93,6 @@ jobs:
           print(f"🎨 Pinterest Chrome Scraper")
           print(f"🔍 Search: {SEARCH_TERM}")
           print(f"🎯 Target: {MAX_IMAGES} images")
-          print(f"📄 Scrolls: {NUM_SCROLLS}")
           print("="*60)
           
           # تنظیمات Chrome
@@ -98,8 +103,6 @@ jobs:
           options.add_argument("--disable-gpu")
           options.add_argument("--window-size=1920,1080")
           options.add_argument("--disable-blink-features=AutomationControlled")
-          options.add_experimental_option("excludeSwitches", ["enable-automation"])
-          options.add_experimental_option("useAutomationExtension", False)
           
           user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
           options.add_argument(f"--user-agent={user_agent}")
@@ -109,28 +112,25 @@ jobs:
           browser = webdriver.Chrome(service=service, options=options)
           
           # جستجو
-          search_url = f"https://www.pinterest.com/search/pins/?q={quote_plus(SEARCH_TERM)}&rs=typed"
+          search_url = f"https://www.pinterest.com/search/pins/?q={quote_plus(SEARCH_TERM)}"
           print(f"🌐 Opening: {search_url}")
           browser.get(search_url)
-          time.sleep(3)
+          time.sleep(5)
           
           image_urls = set()
+          scroll_count = 0
           
-          # اسکرول و استخراج
-          print(f"\n📸 Scrolling and extracting images...")
-          last_height = browser.execute_script("return document.body.scrollHeight")
+          print(f"\n📸 Extracting images...")
           
-          for scroll in range(NUM_SCROLLS):
-              # اسکرول
-              browser.execute_script("window.scrollBy(0, window.innerHeight);")
-              time.sleep(2)
+          while len(image_urls) < MAX_IMAGES and scroll_count < NUM_SCROLLS:
+              scroll_count += 1
               
-              # استخراج تصاویر
+              # استخراج تصاویر از صفحه فعلی
               script = """
               var urls = [];
               var images = document.querySelectorAll('img[src*="i.pinimg.com"]');
               images.forEach(function(img) {
-                  if (img.src && img.src.includes('i.pinimg.com')) {
+                  if (img.src) {
                       var url = img.src;
                       if (url.includes('/236x/')) url = url.replace('/236x/', '/originals/');
                       if (url.includes('/474x/')) url = url.replace('/474x/', '/originals/');
@@ -142,116 +142,84 @@ jobs:
               """
               
               new_urls = browser.execute_script(script)
-              before_count = len(image_urls)
+              before = len(image_urls)
               image_urls.update(new_urls)
-              new_found = len(image_urls) - before_count
+              new_found = len(image_urls) - before
               
-              print(f"  Scroll {scroll+1}/{NUM_SCROLLS}: +{new_found} new (total: {len(image_urls)})")
+              print(f"  Scroll {scroll_count}: +{new_found} (total: {len(image_urls)})")
               
               if len(image_urls) >= MAX_IMAGES:
-                  print(f"\n✅ Reached target of {MAX_IMAGES} images!")
                   break
               
-              # بررسی انتهای صفحه
-              new_height = browser.execute_script("return document.body.scrollHeight")
-              if new_height == last_height:
-                  print(f"  📍 Reached bottom of page")
-                  break
-              last_height = new_height
+              # اسکرول به پایین
+              browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+              time.sleep(3)
           
           browser.quit()
           
           image_list = list(image_urls)[:MAX_IMAGES]
-          print(f"\n📸 Found {len(image_list)} unique image URLs")
+          print(f"\n📸 Found {len(image_list)} images")
           
           if not image_list:
               print("❌ No images found!")
               exit(1)
           
-          # دانلود تصاویر
-          print(f"\n🚀 Downloading {len(image_list)} images...")
+          # دانلود
+          print(f"\n🚀 Downloading...")
           os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
           
-          def download_image(url, idx):
+          def download_img(url, idx):
               try:
                   headers = {'User-Agent': user_agent}
-                  response = requests.get(url, headers=headers, timeout=30)
-                  if response.status_code == 200 and len(response.content) > 5000:
+                  r = requests.get(url, headers=headers, timeout=30)
+                  if r.status_code == 200 and len(r.content) > 5000:
                       ext = url.split('.')[-1].split('?')[0]
-                      if ext not in ['jpg', 'png', 'jpeg', 'webp']:
+                      if ext not in ['jpg', 'png', 'jpeg']:
                           ext = 'jpg'
-                      filename = f"{idx:04d}.{ext}"
-                      filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                      with open(filepath, 'wb') as f:
-                          f.write(response.content)
-                      size_kb = len(response.content) / 1024
-                      print(f"✅ [{idx}/{len(image_list)}] {size_kb:.0f}KB")
+                      path = os.path.join(DOWNLOAD_FOLDER, f"{idx:04d}.{ext}")
+                      with open(path, 'wb') as f:
+                          f.write(r.content)
+                      print(f"✅ [{idx}/{len(image_list)}] {len(r.content)//1024}KB")
                       return True
                   return False
               except Exception as e:
-                  print(f"❌ [{idx}/{len(image_list)}] Failed: {str(e)[:40]}")
+                  print(f"❌ [{idx}] {str(e)[:30]}")
                   return False
           
           downloaded = 0
-          with ThreadPoolExecutor(max_workers=5) as executor:
-              futures = [executor.submit(download_image, url, i+1) for i, url in enumerate(image_list)]
-              for future in futures:
-                  if future.result():
+          with ThreadPoolExecutor(max_workers=5) as ex:
+              futures = [ex.submit(download_img, url, i+1) for i, url in enumerate(image_list)]
+              for f in futures:
+                  if f.result():
                       downloaded += 1
           
-          # ذخیره متادیتا
-          with open(os.path.join(DOWNLOAD_FOLDER, "metadata.json"), "w") as f:
-              json.dump({
-                  "query": SEARCH_TERM,
-                  "total_found": len(image_list),
-                  "downloaded": downloaded,
-                  "date": time.strftime("%Y-%m-%d %H:%M:%S")
-              }, f, indent=2)
+          with open(os.path.join(DOWNLOAD_FOLDER, "info.json"), "w") as f:
+              json.dump({"query": SEARCH_TERM, "downloaded": downloaded, "total": len(image_list)}, f)
           
           print(f"\n{'='*60}")
-          print(f"🎉 Complete!")
-          print(f"✅ Downloaded: {downloaded}/{len(image_list)} images")
-          print(f"📁 Location: {DOWNLOAD_FOLDER}/")
+          print(f"🎉 Done! Downloaded {downloaded}/{len(image_list)} images")
           print(f"{'='*60}")
           EOF
           
-          python pinterest_scraper.py
+          python pinterest_final.py
 
       - name: 📦 Create ZIP
         run: |
-          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.(jpg|png|jpeg)$')" ]; then
+          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.(jpg|png)$')" ]; then
             ZIP_NAME="pinterest_$(date +'%Y%m%d_%H%M%S').zip"
             zip -r "$ZIP_NAME" downloads/
             echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-            IMG_COUNT=$(find downloads -name "*.jpg" -o -name "*.png" | wc -l)
-            echo "✅ Created $ZIP_NAME with $IMG_COUNT images"
           else
             ZIP_NAME="empty_$(date +'%Y%m%d_%H%M%S').zip"
-            echo "No images found for '${{ github.event.inputs.search_query }}'" > result.txt
+            echo "No images found" > result.txt
             zip "$ZIP_NAME" result.txt
             echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           fi
 
-      - name: 💾 Push to repository
+      - name: 💾 Push
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add "${{ env.ZIP_NAME }}" || true
-          git add downloads/ || true
-          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (Chrome)"
+          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }}"
           git push origin HEAD:${{ github.ref_name }} || true
-
-      - name: 📊 Summary
-        run: |
-          IMG_COUNT=$(find downloads -name "*.jpg" 2>/dev/null | wc -l)
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## 🎉 Pinterest Download Results (Chrome)
-          
-          | آیتم | مقدار |
-          |------|-------|
-          | 🔍 جستجو | ${{ github.event.inputs.search_query }} |
-          | 🖼️ تصاویر دانلود شده | $IMG_COUNT |
-          | 📦 فایل ZIP | [${{ env.ZIP_NAME }}](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/${{ env.ZIP_NAME }}) |
-          
-          **📥 دانلود:** روی لینک کلیک کنید → راست کلیک → Save Link As
-          EOF

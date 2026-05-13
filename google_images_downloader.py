@@ -1,114 +1,116 @@
 import os
 import sys
 import zipfile
-import shutil
 from datetime import datetime
 from bing_image_downloader import downloader
+import shutil
+import time
 
 def search_and_download_images(query, target_count, quality="high"):
-    """
-    دانلود تصاویر از Bing با نسخه جدید bing-image-downloader-ext
-    که مشکل دانلود تعداد بالا رو حل کرده
-    """
     print(f"🔍 شروع جستجو در Bing: {query}")
     print(f"🎯 تعداد هدف: {target_count} تصویر")
-    print(f"⭐ کیفیت: {quality}")
-    print(f"🔞 فیلتر محتوای بزرگسالانه: غیرفعال")
-
-    # تنظیم کیفیت
-    size_mapping = {
-        "high": "wallpaper",   # بهترین کیفیت
-        "medium": "large"      # کیفیت متوسط
-    }
-    selected_size = size_mapping.get(quality, "wallpaper")
-
-    # ایجاد پوشه‌ها
+    print(f"🔞 فیلتر محتوای بزرگسالانه: غیرفعال (adult_filter_off=True)")
+    
+    # ایجاد پوشه اصلی
     images_dir = "images"
     downloads_dir = "downloads"
     os.makedirs(images_dir, exist_ok=True)
     os.makedirs(downloads_dir, exist_ok=True)
-
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_query = "".join(c for c in query if c.isalnum() or c in "._- ")[:30]
     
-    # پوشه موقت
-    temp_dir = f"temp_download_{timestamp}"
+    # پوشه نهایی برای ذخیره تصاویر
+    final_folder = os.path.join(images_dir, f"{safe_query}_{timestamp}")
+    os.makedirs(final_folder, exist_ok=True)
     
-    try:
-        # دانلود با نسخه جدید (حالا limit تا 100 یا بیشتر رو پشتیبانی می‌کنه)
-        downloader.download(
-            query,
-            limit=target_count,              # حالا می‌تونه تعداد بالا دانلود کنه!
-            output_dir=temp_dir,
-            adult_filter_off=True,           # غیرفعال کردن فیلتر بزرگسالان
-            force_replace=True,
-            timeout=30,
-            verbose=True,
-            size=selected_size,              # کیفیت بالا
-            file_type='jpg,jpeg,png,webp'    # فرمت‌های قابل قبول
-        )
+    all_downloaded_images = []
+    batch_size = 25  # هر بار 25 تا دانلود کن (تعداد بهینه)
+    current_batch = 0
+    
+    while len(all_downloaded_images) < target_count:
+        current_batch += 1
+        remaining = target_count - len(all_downloaded_images)
+        current_limit = min(batch_size, remaining)
         
-        # پیدا کردن تصاویر دانلود شده
-        download_path = os.path.join(temp_dir, query)
-        downloaded_images = []
-
-        if os.path.exists(download_path):
-            for file in os.listdir(download_path):
-                if file.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                    downloaded_images.append(os.path.join(download_path, file))
-
-        downloaded_count = len(downloaded_images)
-        print(f"\n✅ {downloaded_count} تصویر دانلود شد!")
-
-        if downloaded_count == 0:
-            print("❌ هیچ تصویری دانلود نشد!")
-            return None, 0, 0
-
-        # ذخیره در پوشه نهایی
-        final_folder = os.path.join(images_dir, f"{safe_query}_{timestamp}")
-        os.makedirs(final_folder, exist_ok=True)
-
-        for idx, img_path in enumerate(downloaded_images, 1):
-            ext = img_path.split('.')[-1]
-            new_filename = f"{safe_query}_{idx:04d}.{ext}"
-            new_path = os.path.join(final_folder, new_filename)
-            shutil.copy2(img_path, new_path)
-            print(f"📁 ذخیره شد: {new_filename}")
-
-        # ایجاد فایل Zip
-        zip_name = f"{safe_query}_{downloaded_count}images_{timestamp}.zip"
-        zip_path = os.path.join(downloads_dir, zip_name)
-
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for img_path in downloaded_images:
-                zipf.write(img_path, os.path.basename(img_path))
-
-        # پاک کردن فایل‌های موقت
-        shutil.rmtree(temp_dir)
-
-        print(f"\n✅ تصاویر در مسیر زیر ذخیره شدند:")
-        print(f"   📁 پوشه تصاویر: {final_folder}")
-        print(f"   📦 فایل فشرده: {zip_path}")
-
-        return zip_path, downloaded_count, 0
-
-    except Exception as e:
-        print(f"💥 خطا: {e}")
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+        print(f"\n🔄 مرحله {current_batch}: دانلود {current_limit} تصویر...")
+        
+        # پوشه موقت برای این مرحله
+        temp_dir = f"temp_batch_{timestamp}_{current_batch}"
+        
+        try:
+            # دانلود دسته جدید با adult_filter_off=True
+            downloader.download(
+                query,  # پارامتر موقعیتی
+                limit=current_limit,
+                output_dir=temp_dir,
+                adult_filter_off=True,  # غیرفعال کردن فیلتر بزرگسالان
+                force_replace=True,
+                timeout=30,
+                verbose=False  # برای لاگ کمتر
+            )
+            
+            # پیدا کردن تصاویر دانلود شده
+            download_path = os.path.join(temp_dir, query)
+            if os.path.exists(download_path):
+                new_images = [os.path.join(download_path, f) for f in os.listdir(download_path) 
+                             if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif'))]
+                
+                # کپی به پوشه نهایی
+                for idx, img_path in enumerate(new_images, len(all_downloaded_images) + 1):
+                    ext = img_path.split('.')[-1]
+                    new_filename = f"{safe_query}_{idx:04d}.{ext}"
+                    new_path = os.path.join(final_folder, new_filename)
+                    shutil.copy2(img_path, new_path)
+                    all_downloaded_images.append(new_path)
+                    print(f"   ✅ تصویر {idx} ذخیره شد")
+            
+            # پاک کردن پوشه موقت
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            
+            # صبر بین درخواست‌ها (برای جلوگیری از محدودیت)
+            if len(all_downloaded_images) < target_count:
+                time.sleep(3)
+                
+        except Exception as e:
+            print(f"   ⚠️ خطا در مرحله {current_batch}: {e}")
+            break
+    
+    downloaded_count = len(all_downloaded_images)
+    print(f"\n✅ مجموعاً {downloaded_count} تصویر دانلود شد!")
+    
+    if downloaded_count == 0:
         return None, 0, 0
+    
+    # ایجاد فایل Zip
+    zip_name = f"{safe_query}_{downloaded_count}images_{timestamp}.zip"
+    zip_path = os.path.join(downloads_dir, zip_name)
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for img_path in all_downloaded_images:
+            zipf.write(img_path, os.path.basename(img_path))
+    
+    # حذف فایل‌های تکراری از پوشه images؟ (اختیاری - اگر فقط میخواید zip بمونه)
+    # shutil.rmtree(final_folder)
+    
+    print(f"\n✅ نتایج:")
+    print(f"   📁 پوشه تصاویر: {final_folder}")
+    print(f"   📦 فایل فشرده: {zip_path}")
+    
+    return zip_path, downloaded_count, 0
 
 def main():
     if len(sys.argv) < 3:
         print("Usage: python google_images_downloader.py <search_query> <num_images> [quality]")
         sys.exit(1)
-
+    
     search_query = sys.argv[1]
     target_count = int(sys.argv[2])
     quality = sys.argv[3] if len(sys.argv) > 3 else "high"
-
+    
     zip_path, downloaded, failed = search_and_download_images(search_query, target_count, quality)
-
+    
     print("\n" + "="*50)
     print("📊 گزارش نهایی:")
     print(f"✅ دانلود موفق: {downloaded}")
@@ -116,7 +118,7 @@ def main():
     if zip_path:
         print(f"📁 فایل خروجی: {zip_path}")
     print("="*50)
-
+    
     if downloaded == 0:
         sys.exit(1)
 

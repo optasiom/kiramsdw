@@ -29,7 +29,8 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # برای دسترسی به تاریخچه کامل
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -49,20 +50,45 @@ jobs:
       run: |
         python google_images_downloader.py "$SEARCH_QUERY" "$NUM_IMAGES" "$QUALITY"
     
+    - name: List downloaded files (برای دیباگ)
+      run: |
+        echo "=== محتویات پوشه downloads ==="
+        ls -la downloads/ || echo "پوشه downloads وجود ندارد"
+        echo "=== محتویات پوشه images ==="
+        ls -la images/ || echo "پوشه images وجود ندارد"
+        echo "=== فایل‌های Zip پیدا شده ==="
+        find . -name "*.zip" -type f
+    
     - name: Commit and push images to repository
       run: |
+        # تنظیم git
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # اضافه کردن فایل‌های جدید به git
-        git add downloads/*.zip 2>/dev/null || true
-        git add images/ 2>/dev/null || true
+        # اضافه کردن پوشه‌ها به git (حتی اگر خالی باشند)
+        mkdir -p images downloads
+        git add images/ downloads/ *.zip 2>/dev/null || true
+        
+        # بررسی وضعیت git
+        git status
         
         # اگر تغییری وجود داشت، commit و push کن
-        if ! git diff --cached --quiet; then
-          git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }} [skip ci]"
-          git push
-          echo "✅ فایل‌ها با موفقیت به ریپازیتوری اضافه شدند"
-        else
+        if git diff --cached --quiet; then
           echo "ℹ️ هیچ فایل جدیدی برای commit وجود ندارد"
+        else
+          echo "✅ فایل‌های جدید پیدا شدند، در حال commit..."
+          git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }} [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
+          echo "✅ تغییرات با موفقیت push شد"
         fi
+    
+    - name: Upload images as artifact (اختیاری - اگر می‌خواهید artifact هم داشته باشید)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bing-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
+        path: |
+          downloads/*.zip
+          images/
+        retention-days: 7
+        if-no-files-found: warn

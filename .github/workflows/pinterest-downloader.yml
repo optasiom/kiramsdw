@@ -1,0 +1,185 @@
+name: Pinterest Image Downloader
+
+on:
+  # اجرای دستی از طریق GitHub UI
+  workflow_dispatch:
+    inputs:
+      search_query:
+        description: 'عبارت جستجو در پینترست'
+        required: true
+        default: 'modern architecture'
+        type: string
+      max_results:
+        description: 'تعداد عکس مورد نظر'
+        required: true
+        default: 50
+        type: number
+      image_quality:
+        description: 'کیفیت تصاویر (736x یا originals)'
+        required: true
+        default: '736x'
+        type: choice
+        options:
+          - '736x'
+          - 'originals'
+          - '564x'
+      delay_between_pages:
+        description: 'تاخیر بین صفحات (ثانیه) - بیشتر برای جلوگیری از مسدودیت'
+        required: true
+        default: 5
+        type: number
+
+  # اجرای برنامه‌ریزی شده هر روز ساعت 8 صبح
+  schedule:
+    - cron: '0 8 * * *'  # هر روز ساعت 8:00 UTC
+
+  # اجرا روی push به branch اصلی (اختیاری)
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'pinterest_downloader.py'
+      - 'requirements.txt'
+
+jobs:
+  download-pinterest-images:
+    runs-on: ubuntu-latest
+    
+    # تایم‌اوت کلی workflow (حداکثر 30 دقیقه)
+    timeout-minutes: 30
+    
+    steps:
+      # 1. Checkout کدها
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. نصب Python
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # 3. نصب وابستگی‌ها
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests aiohttp aiofiles
+
+      # 4. آماده‌سازی متغیرهای محیطی
+      - name: 🔧 Prepare environment
+        run: |
+          # ایجاد پوشه دانلود
+          mkdir -p downloads
+          # نمایش تنظیمات
+          echo "🔍 Search: ${{ github.event.inputs.search_query || 'modern architecture' }}"
+          echo "🎯 Max Results: ${{ github.event.inputs.max_results || 50 }}"
+          echo "🖼️ Quality: ${{ github.event.inputs.image_quality || '736x' }}"
+
+      # 5. اجرای اسکریپت اصلی با پارامترهای ورودی
+      - name: 🚀 Run Pinterest Downloader
+        run: |
+          python -c "
+          import asyncio
+          import sys
+          
+          # تنظیمات داینامیک از GitHub Actions
+          SEARCH = '${{ github.event.inputs.search_query }}' or 'modern architecture'
+          MAX_RESULTS = int('${{ github.event.inputs.max_results }}' or 50)
+          QUALITY = '${{ github.event.inputs.image_quality }}' or '736x'
+          DELAY = float('${{ github.event.inputs.delay_between_pages }}' or 5)
+          
+          # ایمپورت کلاس‌ها
+          sys.path.insert(0, '.')
+          
+          # بازنویسی تنظیمات در کلاس Config به صورت داینامیک
+          import pinterest_downloader as pd
+          
+          pd.Config.SEARCH_QUERY = SEARCH
+          pd.Config.MAX_RESULTS = MAX_RESULTS
+          pd.Config.IMAGE_QUALITY = QUALITY
+          pd.Config.DELAY_BETWEEN_PAGES = (DELAY, DELAY + 3)
+          
+          print('='*50)
+          print('🎯 Pinterest Downloader - GitHub Actions Mode')
+          print(f'📝 Query: {SEARCH}')
+          print(f'🎯 Count: {MAX_RESULTS}')
+          print(f'🖼️ Quality: {QUALITY}')
+          print(f'⏱️ Delay: {DELAY}s')
+          print('='*50)
+          
+          # اجرای اصلی
+          asyncio.run(pd.main())
+          "
+        
+      # 6. بررسی و گزارش تعداد فایل‌های دانلود شده
+      - name: 📊 Generate download report
+        id: report
+        run: |
+          DOWNLOAD_COUNT=$(find downloads -type f -name "*.jpg" | wc -l)
+          echo "✅ تعداد تصاویر دانلود شده: $DOWNLOAD_COUNT"
+          echo "download_count=$DOWNLOAD_COUNT" >> $GITHUB_OUTPUT
+          
+          # ایجاد فایل گزارش
+          cat > download_report.txt << EOF
+          📊 Pinterest Download Report
+          ================================
+          تاریخ: $(date)
+          عبارت جستجو: ${{ github.event.inputs.search_query || 'modern architecture' }}
+          تعداد درخواستی: ${{ github.event.inputs.max_results || 50 }}
+          تعداد دانلود شده: $DOWNLOAD_COUNT
+          کیفیت: ${{ github.event.inputs.image_quality || '736x' }}
+          زمان اجرا: $(date '+%Y-%m-%d %H:%M:%S')
+          مخزن: ${{ github.repository }}
+          اجراکننده: ${{ github.actor }}
+          EOF
+          
+          cat download_report.txt
+
+      # 7. آپلود خروجی به عنوان Artifact
+      - name: 📤 Upload images as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinterest-images-${{ github.run_id }}
+          path: |
+            downloads/*.jpg
+            download_report.txt
+            pinterest_urls.json
+          retention-days: 7  # نگهداری فایل‌ها به مدت 7 روز
+          compression-level: 6
+          
+      # 8. آپلود لاگ در صورت خطا
+      - name: 📋 Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs-${{ github.run_id }}
+          path: |
+            *.json
+            *.txt
+          retention-days: 3
+
+      # 9. اعلان موفقیت (اختیاری)
+      - name: ✅ Success notification
+        if: success()
+        run: |
+          echo "🎉 دانلود با موفقیت انجام شد!"
+          echo "📁 تصاویر در Artifact با نام 'pinterest-images-${{ github.run_id }}' قرار دارند"
+          echo "📊 تعداد: ${{ steps.report.outputs.download_count }} عکس"
+
+      # 10. اعلان خطا (اختیاری)
+      - name: ❌ Failure notification
+        if: failure()
+        run: |
+          echo "⚠️ خطا در اجرای دانلودر!"
+          echo "🔍 لطفاً لاگ‌های خطا را بررسی کنید"
+
+  # Job جداگانه برای پاکسازی خودکار (اختیاری)
+  cleanup:
+    needs: download-pinterest-images
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧹 Cleanup old artifacts
+        run: |
+          echo "✅ Workflow completed with status: ${{ needs.download-pinterest-images.result }}"

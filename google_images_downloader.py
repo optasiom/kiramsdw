@@ -1,126 +1,101 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
 import os
+import json
+from urllib.request import Request, urlopen
 import sys
-import zipfile
-from datetime import datetime
-from bing_image_downloader import downloader
-import shutil
 import time
 
-def search_and_download_images(query, target_count, quality="high"):
-    print(f"🔍 شروع جستجو در Bing: {query}")
-    print(f"🎯 تعداد هدف: {target_count} تصویر")
-    print(f"🔞 فیلتر محتوای بزرگسالانه: غیرفعال (adult_filter_off=True)")
-    
-    # ایجاد پوشه اصلی
-    images_dir = "images"
-    downloads_dir = "downloads"
-    os.makedirs(images_dir, exist_ok=True)
-    os.makedirs(downloads_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_query = "".join(c for c in query if c.isalnum() or c in "._- ")[:30]
-    
-    # پوشه نهایی برای ذخیره تصاویر
-    final_folder = os.path.join(images_dir, f"{safe_query}_{timestamp}")
-    os.makedirs(final_folder, exist_ok=True)
-    
-    all_downloaded_images = []
-    batch_size = 25  # هر بار 25 تا دانلود کن (تعداد بهینه)
-    current_batch = 0
-    
-    while len(all_downloaded_images) < target_count:
-        current_batch += 1
-        remaining = target_count - len(all_downloaded_images)
-        current_limit = min(batch_size, remaining)
-        
-        print(f"\n🔄 مرحله {current_batch}: دانلود {current_limit} تصویر...")
-        
-        # پوشه موقت برای این مرحله
-        temp_dir = f"temp_batch_{timestamp}_{current_batch}"
-        
-        try:
-            # دانلود دسته جدید با adult_filter_off=True
-            downloader.download(
-                query,  # پارامتر موقعیتی
-                limit=current_limit,
-                output_dir=temp_dir,
-                adult_filter_off=True,  # غیرفعال کردن فیلتر بزرگسالان
-                force_replace=True,
-                timeout=30,
-                verbose=False  # برای لاگ کمتر
-            )
-            
-            # پیدا کردن تصاویر دانلود شده
-            download_path = os.path.join(temp_dir, query)
-            if os.path.exists(download_path):
-                new_images = [os.path.join(download_path, f) for f in os.listdir(download_path) 
-                             if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif'))]
-                
-                # کپی به پوشه نهایی
-                for idx, img_path in enumerate(new_images, len(all_downloaded_images) + 1):
-                    ext = img_path.split('.')[-1]
-                    new_filename = f"{safe_query}_{idx:04d}.{ext}"
-                    new_path = os.path.join(final_folder, new_filename)
-                    shutil.copy2(img_path, new_path)
-                    all_downloaded_images.append(new_path)
-                    print(f"   ✅ تصویر {idx} ذخیره شد")
-            
-            # پاک کردن پوشه موقت
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            
-            # صبر بین درخواست‌ها (برای جلوگیری از محدودیت)
-            if len(all_downloaded_images) < target_count:
-                time.sleep(3)
-                
-        except Exception as e:
-            print(f"   ⚠️ خطا در مرحله {current_batch}: {e}")
-            break
-    
-    downloaded_count = len(all_downloaded_images)
-    print(f"\n✅ مجموعاً {downloaded_count} تصویر دانلود شد!")
-    
-    if downloaded_count == 0:
-        return None, 0, 0
-    
-    # ایجاد فایل Zip
-    zip_name = f"{safe_query}_{downloaded_count}images_{timestamp}.zip"
-    zip_path = os.path.join(downloads_dir, zip_name)
-    
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for img_path in all_downloaded_images:
-            zipf.write(img_path, os.path.basename(img_path))
-    
-    # حذف فایل‌های تکراری از پوشه images؟ (اختیاری - اگر فقط میخواید zip بمونه)
-    # shutil.rmtree(final_folder)
-    
-    print(f"\n✅ نتایج:")
-    print(f"   📁 پوشه تصاویر: {final_folder}")
-    print(f"   📦 فایل فشرده: {zip_path}")
-    
-    return zip_path, downloaded_count, 0
+download_path = "dataset/"
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python google_images_downloader.py <search_query> <num_images> [quality]")
-        sys.exit(1)
+    searchtext = sys.argv[1]
+    num_requested = int(sys.argv[2])
+    number_of_scrolls = num_requested // 400 + 1
     
-    search_query = sys.argv[1]
-    target_count = int(sys.argv[2])
-    quality = sys.argv[3] if len(sys.argv) > 3 else "high"
+    # ایجاد پوشه خروجی
+    output_folder = download_path + searchtext.replace(" ", "_")
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
     
-    zip_path, downloaded, failed = search_and_download_images(search_query, target_count, quality)
+    # تنظیمات Firefox برای حالت headless (بدون رابط گرافیکی)
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--window-size=1920,1080")
     
-    print("\n" + "="*50)
-    print("📊 گزارش نهایی:")
-    print(f"✅ دانلود موفق: {downloaded}")
-    print(f"❌ دانلود ناموفق: {failed}")
-    if zip_path:
-        print(f"📁 فایل خروجی: {zip_path}")
-    print("="*50)
+    url = f"https://www.google.com/search?q={searchtext}&source=lnms&tbm=isch"
+    driver = webdriver.Firefox(options=options)
+    driver.get(url)
     
-    if downloaded == 0:
-        sys.exit(1)
+    # بستن پنجره کوکی اگر ظاهر شد
+    try:
+        cookie_button = driver.find_element(By.XPATH, "//button[contains(.,'Accept all') or contains(.,'I agree')]")
+        cookie_button.click()
+        time.sleep(2)
+    except:
+        pass
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    extensions = {"jpg", "jpeg", "png", "gif"}
+    img_count = 0
+    downloaded_img_count = 0
+    
+    # اسکرول و کلیک روی دکمه "نمایش موارد بیشتر"
+    for _ in range(number_of_scrolls):
+        for __ in range(10):
+            driver.execute_script("window.scrollBy(0, 1000000)")
+            time.sleep(0.2)
+        time.sleep(0.5)
+        try:
+            show_more = driver.find_element(By.XPATH, "//input[@value='Show more results']")
+            show_more.click()
+            time.sleep(2)
+        except Exception as e:
+            print(f"Less images found or no more button: {e}")
+            break
+    
+    # پیدا کردن تصاویر
+    images = driver.find_elements(By.XPATH, '//div[contains(@class,"rg_meta")]')
+    print(f"Total images found: {len(images)}\n")
+    
+    for img in images:
+        img_count += 1
+        try:
+            img_data = json.loads(img.get_attribute('innerHTML'))
+            img_url = img_data.get("ou", "")
+            img_type = img_data.get("ity", "jpg")
+            
+            if not img_url:
+                continue
+                
+            print(f"Downloading image {img_count}: {img_url}")
+            
+            if img_type not in extensions:
+                img_type = "jpg"
+            
+            req = Request(img_url, headers=headers)
+            raw_img = urlopen(req, timeout=30).read()
+            
+            filename = f"{downloaded_img_count}.{img_type}"
+            filepath = os.path.join(output_folder, filename)
+            
+            with open(filepath, "wb") as f:
+                f.write(raw_img)
+            
+            downloaded_img_count += 1
+            print(f"✅ Downloaded: {filename}")
+            
+        except Exception as e:
+            print(f"Download failed for image {img_count}: {e}")
+        
+        if downloaded_img_count >= num_requested:
+            break
+    
+    print(f"\n📊 Total downloaded: {downloaded_img_count}/{img_count}")
+    driver.quit()
 
 if __name__ == "__main__":
     main()

@@ -128,10 +128,15 @@ jobs:
                                   break
                       
                       if img_url:
+                          # Clean title for filename
+                          raw_title = pin.get("title", f"img_{len(images)}")
+                          clean_title = re.sub(r'[^\w\s-]', '', raw_title)[:30]
+                          clean_title = clean_title.replace(' ', '_')
+                          
                           images.append({
                               "url": img_url,
                               "id": pin.get("id", str(len(images))),
-                              "title": pin.get("title", f"img_{len(images)}")[:40]
+                              "title": clean_title
                           })
                           print(f"  Found: {len(images)}/{MAX_RESULTS}")
                           
@@ -151,17 +156,19 @@ jobs:
           downloaded = 0
           for idx, img in enumerate(images, 1):
               try:
-                  filename = f"{DOWNLOAD_DIR}/{idx:04d}_{re.sub(r'[^\\w\\s-]', '', img['title'])[:30]}.jpg"
-                  filename = re.sub(r'[<>:"/\\\\|?*]', '_', filename)
+                  # Build filename safely
+                  safe_title = img['title'].replace('/', '_').replace('\\', '_')
+                  filename = f"{DOWNLOAD_DIR}/{idx:04d}_{safe_title}.jpg"
                   
                   resp = session.get(img['url'], timeout=30)
                   if resp.status_code == 200 and len(resp.content) > 5000:
                       with open(filename, 'wb') as f:
                           f.write(resp.content)
                       downloaded += 1
-                      print(f"✅ [{idx}/{len(images)}] Downloaded ({len(resp.content)//1024}KB)")
+                      size_kb = len(resp.content) // 1024
+                      print(f"✅ [{idx}/{len(images)}] Downloaded ({size_kb}KB)")
                   else:
-                      print(f"❌ [{idx}/{len(images)}] Failed")
+                      print(f"❌ [{idx}/{len(images)}] Failed (HTTP {resp.status_code})")
                   
                   time.sleep(0.5)
                   
@@ -172,23 +179,34 @@ jobs:
           print(f"Complete! Downloaded {downloaded}/{len(images)} images")
           print(f"Saved in: {DOWNLOAD_DIR}/")
           print(f"{'='*50}")
+          
+          # Save metadata
+          with open(f"{DOWNLOAD_DIR}/metadata.json", "w") as f:
+              json.dump({
+                  "query": SEARCH,
+                  "total_found": len(images),
+                  "downloaded": downloaded,
+                  "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+              }, f, indent=2)
           EOF
           
           python downloader.py
 
       - name: 📦 Create ZIP
         run: |
-          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.jpg$')" ]; then
+          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.jpg$' | head -1)" ]; then
             ZIP_NAME="pinterest_$(date +'%Y%m%d_%H%M%S').zip"
             zip -r "$ZIP_NAME" downloads/
             echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
             IMG_COUNT=$(ls downloads/*.jpg 2>/dev/null | wc -l)
             echo "✅ Created ZIP with $IMG_COUNT images"
+            echo "IMAGE_COUNT=$IMG_COUNT" >> $GITHUB_ENV
           else
             ZIP_NAME="empty_$(date +'%Y%m%d_%H%M%S').zip"
             echo "No images found for '${{ github.event.inputs.search_query }}'" > result.txt
             zip "$ZIP_NAME" result.txt
             echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+            echo "IMAGE_COUNT=0" >> $GITHUB_ENV
             echo "⚠️ No images were found"
           fi
 
@@ -197,20 +215,24 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add "${{ env.ZIP_NAME }}" || true
-          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }}"
+          git add downloads/ || true
+          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${{ env.IMAGE_COUNT }} images)"
           git push origin HEAD:${{ github.ref_name }} || true
+          echo "✅ Pushed to repository"
 
       - name: 📊 Summary
         run: |
-          IMG_COUNT=$(ls downloads/*.jpg 2>/dev/null | wc -l)
           cat >> $GITHUB_STEP_SUMMARY << EOF
           ## 🎉 Pinterest Download Results
           
           | آیتم | مقدار |
           |------|-------|
           | 🔍 جستجو | ${{ github.event.inputs.search_query }} |
-          | 🖼️ تصاویر دانلود شده | $IMG_COUNT |
+          | 🖼️ تصاویر دانلود شده | ${{ env.IMAGE_COUNT }} |
           | 📦 فایل ZIP | [${{ env.ZIP_NAME }}](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/${{ env.ZIP_NAME }}) |
           
-          **📥 دانلود:** روی لینک کلیک کنید → Download raw file
+          **📥 نحوه دانلود:** روی لینک بالا کلیک کنید → راست کلیک → Save Link As
+          
+          ---
+          *این فایل به صورت خودکار توسط GitHub Actions تولید شده است*
           EOF

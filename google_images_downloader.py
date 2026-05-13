@@ -6,38 +6,24 @@ from bing_image_downloader import downloader
 import shutil
 
 def search_and_download_images(query, target_count, quality="high"):
-    """
-    دانلود تصاویر از Bing با استفاده از کتابخانه به‌روز شده
-    """
     print(f"🔍 شروع جستجو در Bing: {query}")
     print(f"🎯 تعداد هدف: {target_count} تصویر")
-    print(f"⭐ کیفیت: {quality}")
     
-    # تنظیم اندازه بر اساس کیفیت
-    size_mapping = {
-        "high": "wallpaper",
-        "medium": "large"
-    }
-    selected_size = size_mapping.get(quality, "large")
-    
-    # ایجاد پوشه موقت
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     temp_dir = f"temp_download_{timestamp}"
     output_dir = "downloads"
     os.makedirs(output_dir, exist_ok=True)
     
     try:
-        # استفاده از پارامتر صحیح query_string
+        # استفاده از پارامتر موقعیتی (بدون نام پارامتر)
         downloader.download(
-            query_string=query,  # تغییر کلیدی اینجا است
+            query,  # اینجا مستقیماً query را می‌دهیم، نه query_string=
             limit=target_count,
             output_dir=temp_dir,
-            adult_filter_off=True,  # خاموش کردن فیلتر بزرگسالان
+            adult_filter_off=True,
             force_replace=True,
             timeout=30,
-            verbose=True,
-            size=selected_size,  # تنظیم کیفیت تصاویر
-            file_type='jpg,png,jpeg'  # فقط فرمت‌های استاندارد
+            verbose=True
         )
         
         # پیدا کردن تصاویر دانلود شده
@@ -65,9 +51,7 @@ def search_and_download_images(query, target_count, quality="high"):
             for img_path in downloaded_images:
                 zipf.write(img_path, os.path.basename(img_path))
         
-        # پاک کردن فایل‌های موقت
         shutil.rmtree(temp_dir)
-        
         print(f"✅ فایل Zip ایجاد شد: {zip_path}")
         return zip_path, downloaded_count, 0
         

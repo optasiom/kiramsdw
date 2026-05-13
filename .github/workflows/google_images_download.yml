@@ -12,6 +12,14 @@ on:
         required: true
         default: '50'
         type: string
+      quality:
+        description: 'کیفیت تصاویر (high/medium)'
+        required: false
+        default: 'high'
+        type: choice
+        options:
+          - high
+          - medium
 
 jobs:
   download-images:
@@ -28,14 +36,17 @@ jobs:
       with:
         python-version: '3.10'
     
-    - name: Install BBID (Bulk Bing Image Downloader)
+    - name: Install dependencies
       run: |
-        pip install --upgrade pip
-        pip install bbid
+        pip install bing-image-downloader
     
     - name: Run image downloader
+      env:
+        SEARCH_QUERY: ${{ github.event.inputs.search_query }}
+        NUM_IMAGES: ${{ github.event.inputs.num_images }}
+        QUALITY: ${{ github.event.inputs.quality }}
       run: |
-        python google_images_downloader.py "${{ github.event.inputs.search_query }}" "${{ github.event.inputs.num_images }}"
+        python google_images_downloader.py "$SEARCH_QUERY" "$NUM_IMAGES" "$QUALITY"
     
     - name: Commit and push to repository
       run: |
@@ -45,4 +56,6 @@ jobs:
         if ! git diff --cached --quiet; then
           git commit -m "Add images for: ${{ github.event.inputs.search_query }} [skip ci]"
           git push
+        else
+          echo "No new images to commit"
         fi

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: 'عبارت جستجو (مثال: "cat" یا "mountain landscape")'
+        description: 'عبارت جستجو'
         required: true
         type: string
       num_images:
@@ -37,7 +37,7 @@ jobs:
     - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install bing-image-downloader
+        pip install bing-image-downloader-ext
     
     - name: Run Bing image downloader
       env:
@@ -55,21 +55,3 @@ jobs:
         path: downloads/*.zip
         retention-days: 7
         if-no-files-found: warn
-    
-    - name: Upload report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: report-${{ github.event.inputs.search_query }}-${{ github.run_number }}
-        path: downloads/*.json
-        retention-days: 7
-        if-no-files-found: warn
-    
-    - name: Commit files to repository
-      if: success()
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add downloads/*.zip downloads/*.json 2>/dev/null || true
-        git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }}" || echo "No new images to commit"
-        git push || echo "Push skipped"

@@ -1,17 +1,17 @@
-name: Pinterest Selenium Downloader
+name: Pinterest Image Downloader
 
 on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: 'Search query (e.g., kagamine len)'
+        description: 'Search term (e.g., kagamine len)'
         required: true
         default: 'kagamine len'
         type: string
       max_results:
         description: 'Number of images'
         required: true
-        default: 20
+        default: 50
         type: number
 
 jobs:
@@ -31,212 +31,165 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🔧 Install Firefox and Geckodriver
+      - name: 📦 Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y firefox
-          wget https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckodriver-v0.34.0-linux64.tar.gz
-          tar -xzf geckodriver-v0.34.0-linux64.tar.gz
-          sudo mv geckodriver /usr/local/bin/
-          chmod +x /usr/local/bin/geckodriver
+          pip install requests
 
-      - name: 📦 Install Python dependencies
+      - name: 🚀 Download Pinterest Images
         run: |
-          pip install selenium beautifulsoup4 pillow
-
-      - name: 🚀 Run Pinterest Downloader
-        run: |
-          cat > pinterest_selenium_downloader.py << 'EOF'
-          #! /usr/bin/env python
-          
-          import concurrent.futures
-          from datetime import datetime
+          cat > downloader.py << 'EOF'
+          import requests
+          import json
+          import time
+          import random
           import os
-          from time import sleep
-          import urllib.request
           import re
+          from urllib.parse import quote
           
-          from bs4 import BeautifulSoup
-          from PIL import Image
-          from selenium import webdriver
-          from selenium.webdriver.firefox.options import Options
-          from selenium.webdriver.common.by import By
-          from selenium.webdriver.support.ui import WebDriverWait
-          from selenium.webdriver.support import expected_conditions as EC
-          
-          import logging
-          
-          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-          logger = logging.getLogger(__name__)
-          
-          SEARCH_QUERY = "${{ github.event.inputs.search_query }}"
+          SEARCH = "${{ github.event.inputs.search_query }}"
           MAX_RESULTS = int("${{ github.event.inputs.max_results }}")
-          DOWNLOAD_FOLDER = "downloads"
+          DOWNLOAD_DIR = "downloads"
           
-          class PinterestDownloader:
-              def __init__(self, num_threads=4):
-                  self.num_threads = num_threads
-                  self.browser = None
+          os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+          
+          print("="*50)
+          print(f"Searching: {SEARCH}")
+          print(f"Target: {MAX_RESULTS} images")
+          print("="*50)
+          
+          session = requests.Session()
+          session.headers.update({
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'application/json, text/javascript, */*; q=0.01',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Referer': 'https://www.pinterest.com/',
+              'Origin': 'https://www.pinterest.com',
+          })
+          
+          # Get initial cookie
+          print("Getting session...")
+          session.get('https://www.pinterest.com/', timeout=30)
+          
+          images = []
+          bookmark = ""
+          page = 0
+          
+          while len(images) < MAX_RESULTS and page < 20:
+              page += 1
+              print(f"Page {page}...")
               
-              def __enter__(self):
-                  options = Options()
-                  options.add_argument("--headless")
-                  options.add_argument("--no-sandbox")
-                  options.add_argument("--disable-dev-shm-usage")
-                  options.add_argument("--disable-gpu")
-                  options.add_argument("--window-size=1920,1080")
-                  self.browser = webdriver.Firefox(options=options)
-                  return self
+              data = {
+                  "options": {
+                      "query": SEARCH,
+                      "bookmarks": [bookmark] if bookmark else [],
+                      "page_size": min(50, MAX_RESULTS - len(images))
+                  }
+              }
               
-              def __exit__(self, exc_type, exc_value, traceback):
-                  if self.browser:
-                      self.browser.quit()
+              params = {
+                  "source_url": f"/search/pins/?q={quote(SEARCH)}",
+                  "data": json.dumps(data)
+              }
               
-              def search_pinterest(self, query, max_results):
-                  """جستجو در پینترست و استخراج لینک تصاویر"""
+              time.sleep(random.uniform(1, 2))
+              
+              try:
+                  resp = session.get(
+                      "https://www.pinterest.com/resource/BaseSearchResource/get/",
+                      params=params,
+                      timeout=30
+                  )
                   
-                  # ساخت URL جستجو
-                  search_url = f"https://www.pinterest.com/search/pins/?q={query.replace(' ', '%20')}"
-                  logger.info(f"Opening: {search_url}")
-                  self.browser.get(search_url)
+                  if resp.status_code == 429:
+                      print("Rate limit, waiting...")
+                      time.sleep(30)
+                      continue
                   
-                  # منتظر بارگذاری صفحه
-                  sleep(3)
+                  if resp.status_code != 200:
+                      print(f"HTTP {resp.status_code}")
+                      break
                   
-                  images = []
-                  last_height = 0
-                  scroll_attempts = 0
+                  result = resp.json()
+                  pins = result.get("resource_response", {}).get("data", {}).get("results", [])
                   
-                  while len(images) < max_results and scroll_attempts < 30:
-                      # استخراج لینک‌های تصاویر
-                      soup = BeautifulSoup(self.browser.page_source, 'html.parser')
-                      img_elements = soup.find_all('img')
+                  if not pins:
+                      print("No more results")
+                      break
+                  
+                  for pin in pins:
+                      img_data = pin.get("images", {})
+                      img_url = None
                       
-                      for img in img_elements:
-                          src = img.get('src', '')
-                          # فیلتر کردن لینک‌های معتبر
-                          if src and 'pinimg.com' in src and src not in [i['url'] for i in images]:
-                              # تبدیل به لینک با کیفیت بالا
-                              high_res_url = src.replace('/236x/', '/736x/').replace('/564x/', '/originals/')
-                              
-                              # استخراج نام فایل
-                              filename = re.sub(r'[^\w\-_.]', '_', src.split('/')[-1].split('?')[0])
-                              if not filename.endswith(('.jpg', '.png', '.jpeg')):
-                                  filename += '.jpg'
-                              
-                              images.append({
-                                  'url': high_res_url,
-                                  'filename': filename,
-                                  'id': len(images) + 1
-                              })
-                              
-                              logger.info(f"Found image {len(images)}/{max_results}")
-                              
-                              if len(images) >= max_results:
+                      # Get best quality
+                      for quality in ["originals", "736x", "564x"]:
+                          if quality in img_data:
+                              img_url = img_data[quality].get("url")
+                              if img_url:
                                   break
                       
-                      # اسکرول به پایین برای بارگذاری بیشتر
-                      self.browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                      sleep(2)
-                      
-                      # بررسی تغییر ارتفاع
-                      new_height = self.browser.execute_script("return document.body.scrollHeight")
-                      if new_height == last_height:
-                          scroll_attempts += 1
-                      else:
-                          scroll_attempts = 0
-                      last_height = new_height
-                      
-                      logger.info(f"Scrolling... Found {len(images)} images so far")
-                  
-                  return images[:max_results]
-              
-              def download_images(self, images):
-                  """دانلود تصاویر با threading"""
-                  
-                  os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-                  
-                  def download_single(img):
-                      try:
-                          filepath = os.path.join(DOWNLOAD_FOLDER, f"{img['id']:04d}_{img['filename']}")
-                          
-                          # اضافه کردن هدر User-Agent
-                          req = urllib.request.Request(img['url'], headers={
-                              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                      if img_url:
+                          images.append({
+                              "url": img_url,
+                              "id": pin.get("id", str(len(images))),
+                              "title": pin.get("title", f"img_{len(images)}")[:40]
                           })
+                          print(f"  Found: {len(images)}/{MAX_RESULTS}")
                           
-                          urllib.request.urlretrieve(req, filepath)
-                          
-                          # بررسی کیفیت
-                          with Image.open(filepath) as img_file:
-                              width, height = img_file.size
-                              size_kb = os.path.getsize(filepath) / 1024
-                              
-                          logger.info(f"✅ Downloaded: {img['filename']} ({width}x{height}, {size_kb:.0f}KB)")
-                          return True
-                          
-                      except Exception as e:
-                          logger.error(f"❌ Failed: {img['filename']} - {str(e)[:50]}")
-                          return False
+                          if len(images) >= MAX_RESULTS:
+                              break
                   
-                  # دانلود موازی
-                  downloaded = 0
-                  with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-                      futures = [executor.submit(download_single, img) for img in images]
-                      for future in concurrent.futures.as_completed(futures):
-                          if future.result():
-                              downloaded += 1
-                  
-                  return downloaded
+                  bookmark = result.get("resource_response", {}).get("bookmark", "")
+                  if not bookmark:
+                      break
+                      
+              except Exception as e:
+                  print(f"Error: {e}")
+                  break
           
-          def main():
-              print("="*60)
-              print(f"🎨 Pinterest Selenium Downloader")
-              print(f"🔍 Search: {SEARCH_QUERY}")
-              print(f"🎯 Target: {MAX_RESULTS} images")
-              print("="*60)
-              
-              with PinterestDownloader(num_threads=4) as downloader:
-                  # جستجو و استخراج لینک‌ها
-                  images = downloader.search_pinterest(SEARCH_QUERY, MAX_RESULTS)
-                  
-                  if not images:
-                      print("❌ No images found!")
-                      return 0
-                  
-                  print(f"\n📸 Found {len(images)} images. Starting download...\n")
-                  
-                  # دانلود
-                  downloaded = downloader.download_images(images)
-                  
-                  print(f"\n{'='*60}")
-                  print(f"🎉 Complete!")
-                  print(f"✅ Downloaded: {downloaded}/{len(images)} images")
-                  print(f"📁 Location: {DOWNLOAD_FOLDER}/")
-                  print(f"{'='*60}")
-                  
-                  return downloaded
+          print(f"\nFound {len(images)} images. Downloading...")
           
-          if __name__ == "__main__":
-              main()
+          downloaded = 0
+          for idx, img in enumerate(images, 1):
+              try:
+                  filename = f"{DOWNLOAD_DIR}/{idx:04d}_{re.sub(r'[^\\w\\s-]', '', img['title'])[:30]}.jpg"
+                  filename = re.sub(r'[<>:"/\\\\|?*]', '_', filename)
+                  
+                  resp = session.get(img['url'], timeout=30)
+                  if resp.status_code == 200 and len(resp.content) > 5000:
+                      with open(filename, 'wb') as f:
+                          f.write(resp.content)
+                      downloaded += 1
+                      print(f"✅ [{idx}/{len(images)}] Downloaded ({len(resp.content)//1024}KB)")
+                  else:
+                      print(f"❌ [{idx}/{len(images)}] Failed")
+                  
+                  time.sleep(0.5)
+                  
+              except Exception as e:
+                  print(f"❌ [{idx}] Error: {str(e)[:50]}")
+          
+          print(f"\n{'='*50}")
+          print(f"Complete! Downloaded {downloaded}/{len(images)} images")
+          print(f"Saved in: {DOWNLOAD_DIR}/")
+          print(f"{'='*50}")
           EOF
           
-          python pinterest_selenium_downloader.py
+          python downloader.py
 
       - name: 📦 Create ZIP
         run: |
-          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.(jpg|png|jpeg)$')" ]; then
+          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.jpg$')" ]; then
             ZIP_NAME="pinterest_$(date +'%Y%m%d_%H%M%S').zip"
             zip -r "$ZIP_NAME" downloads/
             echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-            IMG_COUNT=$(find downloads -name "*.jpg" -o -name "*.png" | wc -l)
-            echo "✅ Created $ZIP_NAME with $IMG_COUNT images"
+            IMG_COUNT=$(ls downloads/*.jpg 2>/dev/null | wc -l)
+            echo "✅ Created ZIP with $IMG_COUNT images"
           else
-            echo "⚠️ No images downloaded"
             ZIP_NAME="empty_$(date +'%Y%m%d_%H%M%S').zip"
             echo "No images found for '${{ github.event.inputs.search_query }}'" > result.txt
             zip "$ZIP_NAME" result.txt
             echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+            echo "⚠️ No images were found"
           fi
 
       - name: 💾 Push to repository
@@ -244,15 +197,14 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add "${{ env.ZIP_NAME }}" || true
-          git add downloads/ || true
-          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (Selenium)"
+          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }}"
           git push origin HEAD:${{ github.ref_name }} || true
 
       - name: 📊 Summary
         run: |
-          IMG_COUNT=$(find downloads -name "*.jpg" -o -name "*.png" 2>/dev/null | wc -l)
+          IMG_COUNT=$(ls downloads/*.jpg 2>/dev/null | wc -l)
           cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## 🎉 Pinterest Download Results (Selenium)
+          ## 🎉 Pinterest Download Results
           
           | آیتم | مقدار |
           |------|-------|
@@ -260,5 +212,5 @@ jobs:
           | 🖼️ تصاویر دانلود شده | $IMG_COUNT |
           | 📦 فایل ZIP | [${{ env.ZIP_NAME }}](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/${{ env.ZIP_NAME }}) |
           
-          **📥 دانلود:** روی لینک کلیک کنید → راست کلیک → Save Link As
+          **📥 دانلود:** روی لینک کلیک کنید → Download raw file
           EOF

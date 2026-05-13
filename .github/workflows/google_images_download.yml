@@ -38,8 +38,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip uninstall bing-image-downloader -y || true
-        pip install bing-image-downloader-ext
+        pip install bing-image-downloader
     
     - name: Run image downloader
       run: |

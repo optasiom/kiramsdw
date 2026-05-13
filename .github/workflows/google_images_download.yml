@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: 'عبارت جستجو'
+        description: 'عبارت جستجو (مثال: "cat" یا "mountain landscape")'
         required: true
         type: string
       num_images:
@@ -28,6 +28,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # برای دسترسی به تاریخچه کامل
     
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -37,7 +39,7 @@ jobs:
     - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install bing-image-downloader-ext
+        pip install bing-image-downloader
     
     - name: Run Bing image downloader
       env:
@@ -47,11 +49,20 @@ jobs:
       run: |
         python google_images_downloader.py "$SEARCH_QUERY" "$NUM_IMAGES" "$QUALITY"
     
-    - name: Upload images as artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: bing-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
-        path: downloads/*.zip
-        retention-days: 7
-        if-no-files-found: warn
+    - name: Commit and push images to repository
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # اضافه کردن فایل‌های جدید به git
+        git add downloads/*.zip 2>/dev/null || true
+        git add images/ 2>/dev/null || true
+        
+        # اگر تغییری وجود داشت، commit و push کن
+        if ! git diff --cached --quiet; then
+          git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }} [skip ci]"
+          git push
+          echo "✅ فایل‌ها با موفقیت به ریپازیتوری اضافه شدند"
+        else
+          echo "ℹ️ هیچ فایل جدیدی برای commit وجود ندارد"
+        fi

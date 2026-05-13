@@ -1,4 +1,4 @@
-name: DuckDuckGo Image Downloader
+name: Bing Image Downloader
 
 on:
   workflow_dispatch:
@@ -37,9 +37,9 @@ jobs:
     - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install duckduckgo-search requests
+        pip install bing-image-downloader
     
-    - name: Run DuckDuckGo image downloader
+    - name: Run Bing image downloader
       env:
         SEARCH_QUERY: ${{ github.event.inputs.search_query }}
         NUM_IMAGES: ${{ github.event.inputs.num_images }}
@@ -51,7 +51,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: duckduckgo-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
+        name: bing-images-${{ github.event.inputs.search_query }}-${{ github.run_number }}
         path: downloads/*.zip
         retention-days: 7
         if-no-files-found: warn
@@ -64,3 +64,12 @@ jobs:
         path: downloads/*.json
         retention-days: 7
         if-no-files-found: warn
+    
+    - name: Commit files to repository
+      if: success()
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add downloads/*.zip downloads/*.json 2>/dev/null || true
+        git commit -m "Add downloaded images for: ${{ github.event.inputs.search_query }}" || echo "No new images to commit"
+        git push || echo "Push skipped"

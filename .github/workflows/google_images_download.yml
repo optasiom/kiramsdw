@@ -38,15 +38,12 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install bing-image-downloader
+        pip uninstall bing-image-downloader -y || true
+        pip install bing-image-downloader-ext
     
     - name: Run image downloader
-      env:
-        SEARCH_QUERY: ${{ github.event.inputs.search_query }}
-        NUM_IMAGES: ${{ github.event.inputs.num_images }}
-        QUALITY: ${{ github.event.inputs.quality }}
       run: |
-        python google_images_downloader.py "$SEARCH_QUERY" "$NUM_IMAGES" "$QUALITY"
+        python google_images_downloader.py "${{ github.event.inputs.search_query }}" "${{ github.event.inputs.num_images }}" "${{ github.event.inputs.quality }}"
     
     - name: Commit and push to repository
       run: |

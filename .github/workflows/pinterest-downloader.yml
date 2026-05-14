@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     
     steps:
       - name: 📥 Checkout
@@ -36,7 +37,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🔧 Install Chrome and matching ChromeDriver
+      - name: 🔧 Install Chrome
         run: |
           wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
@@ -44,10 +45,7 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           
           CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          echo "Chrome version: $CHROME_VERSION"
-          
           CHROME_MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d. -f1)
-          echo "Chrome major version: $CHROME_MAJOR_VERSION"
           
           wget "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" || \
           wget "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_MAJOR_VERSION}.0.0.0/linux64/chromedriver-linux64.zip" || \
@@ -56,13 +54,10 @@ jobs:
           unzip chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/ || sudo mv chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
-          
-          chromedriver --version
-          google-chrome --version
 
       - name: 📦 Install Python dependencies
         run: |
-          pip install selenium webdriver-manager requests
+          pip install selenium requests
 
       - name: 🚀 Run Pinterest Scraper
         run: |
@@ -72,7 +67,6 @@ jobs:
           import json
           import requests
           import zipfile
-          from pathlib import Path
           from urllib.parse import quote_plus
           from selenium import webdriver
           from selenium.webdriver.chrome.options import Options
@@ -83,12 +77,11 @@ jobs:
           MAX_IMAGES = int("${{ github.event.inputs.max_results }}")
           NUM_SCROLLS = int("${{ github.event.inputs.scrolls }}")
           DOWNLOAD_FOLDER = "downloads"
-          MAX_ZIP_SIZE = 95 * 1024 * 1024  # 95 MB in bytes
+          MAX_ZIP_SIZE = 90 * 1024 * 1024  # 90 MB (safe margin)
           
           print("="*60)
-          print(f"🎨 Pinterest Chrome Scraper")
+          print(f"🎨 Pinterest Scraper")
           print(f"🔍 Search: {SEARCH_TERM}")
-          print(f"🎯 Target: {MAX_IMAGES} images")
           print("="*60)
           
           options = Options()
@@ -99,26 +92,21 @@ jobs:
           options.add_argument("--window-size=1920,1080")
           options.add_argument("--disable-blink-features=AutomationControlled")
           
-          user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+          user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
           options.add_argument(f"--user-agent={user_agent}")
           
-          print("🔧 Launching Chrome...")
           service = Service('/usr/local/bin/chromedriver')
           browser = webdriver.Chrome(service=service, options=options)
           
           search_url = f"https://www.pinterest.com/search/pins/?q={quote_plus(SEARCH_TERM)}"
-          print(f"🌐 Opening: {search_url}")
           browser.get(search_url)
           time.sleep(5)
           
           image_urls = set()
           scroll_count = 0
           
-          print(f"\n📸 Extracting images...")
-          
           while len(image_urls) < MAX_IMAGES and scroll_count < NUM_SCROLLS:
               scroll_count += 1
-              
               script = """
               var urls = [];
               var images = document.querySelectorAll('img[src*="i.pinimg.com"]');
@@ -133,22 +121,15 @@ jobs:
               });
               return urls;
               """
-              
               new_urls = browser.execute_script(script)
-              before = len(image_urls)
               image_urls.update(new_urls)
-              new_found = len(image_urls) - before
-              
-              print(f"  Scroll {scroll_count}: +{new_found} (total: {len(image_urls)})")
-              
+              print(f"  Scroll {scroll_count}: total {len(image_urls)}")
               if len(image_urls) >= MAX_IMAGES:
                   break
-              
               browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
               time.sleep(3)
           
           browser.quit()
-          
           image_list = list(image_urls)[:MAX_IMAGES]
           print(f"\n📸 Found {len(image_list)} images")
           
@@ -156,9 +137,7 @@ jobs:
               print("❌ No images found!")
               exit(1)
           
-          print(f"\n🚀 Downloading...")
           os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-          
           downloaded_files = []
           file_sizes = []
           
@@ -173,9 +152,8 @@ jobs:
                       path = os.path.join(DOWNLOAD_FOLDER, f"{idx:04d}.{ext}")
                       with open(path, 'wb') as f:
                           f.write(r.content)
-                      file_size = len(r.content)
-                      print(f"✅ [{idx}/{len(image_list)}] {file_size//1024}KB")
-                      return path, file_size
+                      print(f"✅ [{idx}] {len(r.content)//1024}KB")
+                      return path, len(r.content)
                   return None, 0
               except Exception as e:
                   print(f"❌ [{idx}] {str(e)[:30]}")
@@ -189,143 +167,160 @@ jobs:
                       downloaded_files.append(path)
                       file_sizes.append(size)
           
-          print(f"\n✅ Successfully downloaded: {len(downloaded_files)} files")
+          print(f"\n✅ Downloaded: {len(downloaded_files)} files")
           
-          # Create ZIP files with size limit
-          print(f"\n📦 Creating ZIP files (max {MAX_ZIP_SIZE // (1024*1024)}MB per file)...")
-          
+          # Create ZIP files
           zip_files = []
-          current_zip_idx = 1
-          current_zip = zipfile.ZipFile(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip", 'w', zipfile.ZIP_DEFLATED)
+          current_idx = 1
+          current_zip = zipfile.ZipFile(f"pinterest_part{current_idx}.zip", 'w', zipfile.ZIP_DEFLATED)
           current_size = 0
           
           for file_path, file_size in zip(downloaded_files, file_sizes):
               if current_size + file_size > MAX_ZIP_SIZE and current_size > 0:
-                  # Close current zip and start new one
                   current_zip.close()
-                  zip_files.append(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip")
-                  current_zip_idx += 1
-                  current_zip = zipfile.ZipFile(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip", 'w', zipfile.ZIP_DEFLATED)
+                  zip_files.append(f"pinterest_part{current_idx}.zip")
+                  current_idx += 1
+                  current_zip = zipfile.ZipFile(f"pinterest_part{current_idx}.zip", 'w', zipfile.ZIP_DEFLATED)
                   current_size = 0
               
-              # Add file to current zip
               current_zip.write(file_path, os.path.basename(file_path))
               current_size += file_size
           
-          # Close last zip
-          if current_size > 0:
-              current_zip.close()
-              zip_files.append(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip")
+          current_zip.close()
+          zip_files.append(f"pinterest_part{current_idx}.zip")
           
-          # Save info.json
-          with open(os.path.join(DOWNLOAD_FOLDER, "info.json"), "w") as f:
+          # Save metadata
+          with open("metadata.json", "w") as f:
               json.dump({
-                  "query": SEARCH_TERM, 
-                  "downloaded": len(downloaded_files), 
-                  "total": len(image_list),
+                  "query": SEARCH_TERM,
+                  "downloaded": len(downloaded_files),
                   "zip_files": zip_files,
                   "total_size_mb": sum(file_sizes) / (1024*1024)
               }, f)
           
-          # Also add info.json to each zip
-          for zip_file in zip_files:
-              with zipfile.ZipFile(zip_file, 'a') as zf:
-                  zf.write(os.path.join(DOWNLOAD_FOLDER, "info.json"), "info.json")
-          
-          # Save list of zip files for GitHub Actions
-          with open("zip_files.txt", "w") as f:
+          # Also save list for GitHub Actions
+          with open("zip_list.txt", "w") as f:
               for zf in zip_files:
                   f.write(f"{zf}\n")
           
-          print(f"\n{'='*60}")
-          print(f"🎉 Done! Downloaded {len(downloaded_files)} images")
-          print(f"📦 Created {len(zip_files)} ZIP file(s):")
+          print(f"\n📦 Created {len(zip_files)} ZIP file(s):")
           for zf in zip_files:
               size_mb = os.path.getsize(zf) / (1024*1024)
-              print(f"   - {zf} ({size_mb:.1f}MB)")
-          print(f"💾 Total size: {sum(file_sizes) / (1024*1024):.1f}MB")
-          print(f"{'='*60}")
+              print(f"   {zf} ({size_mb:.1f}MB)")
           EOF
           
           python pinterest_final.py
 
-      - name: 📤 Upload ZIP files to release
+      - name: 📤 Upload ZIP files as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinterest-images-${{ github.event.inputs.search_query }}
+          path: |
+            *.zip
+            metadata.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 🔄 Upload to Release (using API)
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f "zip_files.txt" ]; then
-            # Read zip files list
+          # Create a tag and release
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          TAG_NAME="pinterest_${TIMESTAMP}"
+          RELEASE_NAME="📸 Pinterest: ${{ github.event.inputs.search_query }} (${TIMESTAMP})"
+          
+          echo "Creating release: $TAG_NAME"
+          
+          # Create release using GitHub API
+          CREATE_RELEASE_RESPONSE=$(curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${GITHUB_REPOSITORY}/releases \
+            -d "{
+              \"tag_name\": \"${TAG_NAME}\",
+              \"name\": \"${RELEASE_NAME}\",
+              \"body\": \"Downloaded images for: ${{ github.event.inputs.search_query }}\nTotal files: $(cat metadata.json | jq -r .downloaded 2>/dev/null || echo 'unknown')\",
+              \"draft\": false,
+              \"prerelease\": false
+            }")
+          
+          # Extract upload URL
+          UPLOAD_URL=$(echo "$CREATE_RELEASE_RESPONSE" | jq -r .upload_url | cut -d'{' -f1)
+          echo "Upload URL: $UPLOAD_URL"
+          
+          # Upload each ZIP file
+          if [ -f "zip_list.txt" ]; then
             while IFS= read -r zip_file; do
               if [ -f "$zip_file" ]; then
-                echo "📦 Processing: $zip_file"
+                echo "Uploading: $zip_file"
+                FILE_SIZE=$(stat -c%s "$zip_file")
                 
-                # Create a unique tag for this run
-                TAG_NAME="pinterest_$(date +'%Y%m%d_%H%M%S')_${RANDOM}"
-                
-                # Create a release for each zip file
-                gh release create "$TAG_NAME" "$zip_file" \
-                  --title "📸 Pinterest: ${{ github.event.inputs.search_query }}" \
-                  --notes "Downloaded on $(date)\nSearch term: ${{ github.event.inputs.search_query }}\nFile: $zip_file" \
-                  --repo ${{ github.repository }} || true
+                curl -L \
+                  -X POST \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                  -H "Content-Type: application/zip" \
+                  -H "Content-Length: ${FILE_SIZE}" \
+                  --data-binary @"${zip_file}" \
+                  "${UPLOAD_URL}?name=$(basename "${zip_file}")"
                 
                 echo "✅ Uploaded: $zip_file"
-                sleep 2  # Avoid rate limiting
               fi
-            done < zip_files.txt
-            
-            # Also push to branch as backup
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action"
-            
-            for zip_file in $(cat zip_files.txt); do
-              if [ -f "$zip_file" ]; then
-                git add "$zip_file" || true
-              fi
-            done
-            
-            git add downloads/info.json || true
-            git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${#zip_files} parts)"
-            git push origin HEAD:${{ github.ref_name }} || true
-          else
-            echo "⚠️ No zip files found to upload"
+            done < zip_list.txt
           fi
+          
+          # Also upload metadata
+          if [ -f "metadata.json" ]; then
+            curl -L \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"metadata.json" \
+              "${UPLOAD_URL}?name=metadata.json"
+          fi
+          
+          echo "RELEASE_TAG=${TAG_NAME}" >> $GITHUB_ENV
 
       - name: 📊 Summary
         run: |
-          echo "## 🎨 Pinterest Download Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎨 Pinterest Download Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Search Term:** ${{ github.event.inputs.search_query }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Max Results:** ${{ github.event.inputs.max_results }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ -f "zip_files.txt" ]; then
-            TOTAL_SIZE=0
-            FILE_COUNT=$(cat zip_files.txt | wc -l)
-            echo "**ZIP Files Created:** $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+          if [ -f "metadata.json" ]; then
+            DOWNLOADED=$(jq -r .downloaded metadata.json 2>/dev/null || echo "0")
+            TOTAL_SIZE=$(jq -r .total_size_mb metadata.json 2>/dev/null || echo "0")
+            echo "**Images Downloaded:** $DOWNLOADED" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Size:** ${TOTAL_SIZE} MB" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-            
+            echo "### 📦 Download Options:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "1. **GitHub Release**: Check the [Releases](https://github.com/${GITHUB_REPOSITORY}/releases) section" >> $GITHUB_STEP_SUMMARY
+            echo "2. **Workflow Artifacts**: Go to Actions → This workflow → Artifacts" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "zip_list.txt" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📁 ZIP Files:" >> $GITHUB_STEP_SUMMARY
             while IFS= read -r zip_file; do
               if [ -f "$zip_file" ]; then
                 SIZE=$(du -h "$zip_file" | cut -f1)
-                echo "| \`$zip_file\` | $SIZE |" >> $GITHUB_STEP_SUMMARY
-                TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$zip_file")))
+                echo "- \`$zip_file\` ($SIZE)" >> $GITHUB_STEP_SUMMARY
               fi
-            done < zip_files.txt
-            
-            TOTAL_MB=$((TOTAL_SIZE / 1024 / 1024))
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Total Download Size:** ${TOTAL_MB} MB" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ Images are available in the **Releases** section and in the repository files." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ No images were downloaded successfully." >> $GITHUB_STEP_SUMMARY
+            done < zip_list.txt
           fi
 
-      - name: Cleanup old releases (optional)
+      - name: 📝 Commit metadata
         run: |
-          # Keep only last 10 releases to save space
-          gh release list --limit 20 --repo ${{ github.repository }} | tail -n +11 | awk '{print $1}' | while read release; do
-            echo "🗑️ Deleting old release: $release"
-            gh release delete "$release" --yes --repo ${{ github.repository }} || true
-          done
-        continue-on-error: true
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add metadata.json zip_list.txt *.zip 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "📸 Pinterest download: ${{ github.event.inputs.search_query }}"
+          git push origin HEAD:${{ github.ref_name }} || echo "Push skipped (no changes or permissions)"

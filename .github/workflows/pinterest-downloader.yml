@@ -30,7 +30,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0  # Fetch all history to avoid sync issues
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -39,22 +38,17 @@ jobs:
 
       - name: 🔧 Install Chrome and matching ChromeDriver
         run: |
-          # نصب Google Chrome آخرین نسخه
           wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
           
-          # دریافت نسخه دقیق Chrome
           CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
           echo "Chrome version: $CHROME_VERSION"
           
-          # استخراج نسخه اصلی (مثل 148)
           CHROME_MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d. -f1)
           echo "Chrome major version: $CHROME_MAJOR_VERSION"
           
-          # دانلود ChromeDriver متناسب با نسخه Chrome
-          # استفاده از Chrome for Testing API برای دریافت نسخه مناسب
           wget "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" || \
           wget "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_MAJOR_VERSION}.0.0.0/linux64/chromedriver-linux64.zip" || \
           wget "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/134.0.6998.88/linux64/chromedriver-linux64.zip"
@@ -63,7 +57,6 @@ jobs:
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/ || sudo mv chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
           
-          # بررسی نصب
           chromedriver --version
           google-chrome --version
 
@@ -78,17 +71,19 @@ jobs:
           import time
           import json
           import requests
+          import zipfile
+          from pathlib import Path
           from urllib.parse import quote_plus
           from selenium import webdriver
           from selenium.webdriver.chrome.options import Options
           from selenium.webdriver.chrome.service import Service
-          from selenium.webdriver.common.by import By
           from concurrent.futures import ThreadPoolExecutor
           
           SEARCH_TERM = "${{ github.event.inputs.search_query }}"
           MAX_IMAGES = int("${{ github.event.inputs.max_results }}")
           NUM_SCROLLS = int("${{ github.event.inputs.scrolls }}")
           DOWNLOAD_FOLDER = "downloads"
+          MAX_ZIP_SIZE = 95 * 1024 * 1024  # 95 MB in bytes
           
           print("="*60)
           print(f"🎨 Pinterest Chrome Scraper")
@@ -96,7 +91,6 @@ jobs:
           print(f"🎯 Target: {MAX_IMAGES} images")
           print("="*60)
           
-          # تنظیمات Chrome
           options = Options()
           options.add_argument("--headless=new")
           options.add_argument("--no-sandbox")
@@ -112,7 +106,6 @@ jobs:
           service = Service('/usr/local/bin/chromedriver')
           browser = webdriver.Chrome(service=service, options=options)
           
-          # جستجو
           search_url = f"https://www.pinterest.com/search/pins/?q={quote_plus(SEARCH_TERM)}"
           print(f"🌐 Opening: {search_url}")
           browser.get(search_url)
@@ -126,7 +119,6 @@ jobs:
           while len(image_urls) < MAX_IMAGES and scroll_count < NUM_SCROLLS:
               scroll_count += 1
               
-              # استخراج تصاویر از صفحه فعلی
               script = """
               var urls = [];
               var images = document.querySelectorAll('img[src*="i.pinimg.com"]');
@@ -152,7 +144,6 @@ jobs:
               if len(image_urls) >= MAX_IMAGES:
                   break
               
-              # اسکرول به پایین
               browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
               time.sleep(3)
           
@@ -165,9 +156,11 @@ jobs:
               print("❌ No images found!")
               exit(1)
           
-          # دانلود
           print(f"\n🚀 Downloading...")
           os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+          
+          downloaded_files = []
+          file_sizes = []
           
           def download_img(url, idx):
               try:
@@ -175,150 +168,164 @@ jobs:
                   r = requests.get(url, headers=headers, timeout=30)
                   if r.status_code == 200 and len(r.content) > 5000:
                       ext = url.split('.')[-1].split('?')[0]
-                      if ext not in ['jpg', 'png', 'jpeg']:
+                      if ext not in ['jpg', 'png', 'jpeg', 'webp']:
                           ext = 'jpg'
                       path = os.path.join(DOWNLOAD_FOLDER, f"{idx:04d}.{ext}")
                       with open(path, 'wb') as f:
                           f.write(r.content)
-                      print(f"✅ [{idx}/{len(image_list)}] {len(r.content)//1024}KB")
-                      return True
-                  return False
+                      file_size = len(r.content)
+                      print(f"✅ [{idx}/{len(image_list)}] {file_size//1024}KB")
+                      return path, file_size
+                  return None, 0
               except Exception as e:
                   print(f"❌ [{idx}] {str(e)[:30]}")
-                  return False
+                  return None, 0
           
-          downloaded = 0
           with ThreadPoolExecutor(max_workers=5) as ex:
               futures = [ex.submit(download_img, url, i+1) for i, url in enumerate(image_list)]
-              for f in futures:
-                  if f.result():
-                      downloaded += 1
+              for future in futures:
+                  path, size = future.result()
+                  if path:
+                      downloaded_files.append(path)
+                      file_sizes.append(size)
           
+          print(f"\n✅ Successfully downloaded: {len(downloaded_files)} files")
+          
+          # Create ZIP files with size limit
+          print(f"\n📦 Creating ZIP files (max {MAX_ZIP_SIZE // (1024*1024)}MB per file)...")
+          
+          zip_files = []
+          current_zip_idx = 1
+          current_zip = zipfile.ZipFile(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip", 'w', zipfile.ZIP_DEFLATED)
+          current_size = 0
+          
+          for file_path, file_size in zip(downloaded_files, file_sizes):
+              if current_size + file_size > MAX_ZIP_SIZE and current_size > 0:
+                  # Close current zip and start new one
+                  current_zip.close()
+                  zip_files.append(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip")
+                  current_zip_idx += 1
+                  current_zip = zipfile.ZipFile(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip", 'w', zipfile.ZIP_DEFLATED)
+                  current_size = 0
+              
+              # Add file to current zip
+              current_zip.write(file_path, os.path.basename(file_path))
+              current_size += file_size
+          
+          # Close last zip
+          if current_size > 0:
+              current_zip.close()
+              zip_files.append(f"pinterest_{SEARCH_TERM[:20]}_part{current_zip_idx}.zip")
+          
+          # Save info.json
           with open(os.path.join(DOWNLOAD_FOLDER, "info.json"), "w") as f:
-              json.dump({"query": SEARCH_TERM, "downloaded": downloaded, "total": len(image_list)}, f)
+              json.dump({
+                  "query": SEARCH_TERM, 
+                  "downloaded": len(downloaded_files), 
+                  "total": len(image_list),
+                  "zip_files": zip_files,
+                  "total_size_mb": sum(file_sizes) / (1024*1024)
+              }, f)
+          
+          # Also add info.json to each zip
+          for zip_file in zip_files:
+              with zipfile.ZipFile(zip_file, 'a') as zf:
+                  zf.write(os.path.join(DOWNLOAD_FOLDER, "info.json"), "info.json")
+          
+          # Save list of zip files for GitHub Actions
+          with open("zip_files.txt", "w") as f:
+              for zf in zip_files:
+                  f.write(f"{zf}\n")
           
           print(f"\n{'='*60}")
-          print(f"🎉 Done! Downloaded {downloaded}/{len(image_list)} images")
+          print(f"🎉 Done! Downloaded {len(downloaded_files)} images")
+          print(f"📦 Created {len(zip_files)} ZIP file(s):")
+          for zf in zip_files:
+              size_mb = os.path.getsize(zf) / (1024*1024)
+              print(f"   - {zf} ({size_mb:.1f}MB)")
+          print(f"💾 Total size: {sum(file_sizes) / (1024*1024):.1f}MB")
           print(f"{'='*60}")
           EOF
           
           python pinterest_final.py
 
-      - name: 📦 Create ZIP with splitting if >95MB
+      - name: 📤 Upload ZIP files to release
         run: |
-          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
-          BASE_NAME="pinterest_${TIMESTAMP}"
-          
-          if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.(jpg|png)$')" ]; then
-            # First create the full zip
-            FULL_ZIP="${BASE_NAME}.zip"
-            zip -r "$FULL_ZIP" downloads/
+          if [ -f "zip_files.txt" ]; then
+            # Read zip files list
+            while IFS= read -r zip_file; do
+              if [ -f "$zip_file" ]; then
+                echo "📦 Processing: $zip_file"
+                
+                # Create a unique tag for this run
+                TAG_NAME="pinterest_$(date +'%Y%m%d_%H%M%S')_${RANDOM}"
+                
+                # Create a release for each zip file
+                gh release create "$TAG_NAME" "$zip_file" \
+                  --title "📸 Pinterest: ${{ github.event.inputs.search_query }}" \
+                  --notes "Downloaded on $(date)\nSearch term: ${{ github.event.inputs.search_query }}\nFile: $zip_file" \
+                  --repo ${{ github.repository }} || true
+                
+                echo "✅ Uploaded: $zip_file"
+                sleep 2  # Avoid rate limiting
+              fi
+            done < zip_files.txt
             
-            # Check file size in bytes (95MB = 99614720 bytes)
-            FILE_SIZE=$(stat -c%s "$FULL_ZIP")
-            MAX_SIZE=99614720  # 95MB in bytes
+            # Also push to branch as backup
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
             
-            if [ $FILE_SIZE -gt $MAX_SIZE ]; then
-              echo "📦 File size is $(($FILE_SIZE/1048576))MB, splitting into parts..."
-              
-              # Split the zip file into 95MB parts
-              zip -s 95m "$FULL_ZIP" --out "${BASE_NAME}_split.zip"
-              rm "$FULL_ZIP"
-              
-              # Rename split files to more readable names
-              mv "${BASE_NAME}_split.z01" "${BASE_NAME}.z01" 2>/dev/null || true
-              mv "${BASE_NAME}_split.z02" "${BASE_NAME}.z02" 2>/dev/null || true
-              mv "${BASE_NAME}_split.z03" "${BASE_NAME}.z03" 2>/dev/null || true
-              mv "${BASE_NAME}_split.z04" "${BASE_NAME}.z04" 2>/dev/null || true
-              mv "${BASE_NAME}_split.z05" "${BASE_NAME}.z05" 2>/dev/null || true
-              mv "${BASE_NAME}_split.zip" "${BASE_NAME}.zip" 2>/dev/null || true
-              
-              # Create a helper script to reassemble
-              cat > reassemble_${TIMESTAMP}.sh << 'SCRIPT'
-              #!/bin/bash
-              echo "To reassemble the split zip files, run:"
-              echo "zip -s 0 ${BASE_NAME}.zip --out ${BASE_NAME}_complete.zip"
-              echo "Then extract the complete zip file"
-              SCRIPT
-              chmod +x reassemble_${TIMESTAMP}.sh
-              
-              echo "✅ Created split archive: ${BASE_NAME}.zip, ${BASE_NAME}.z01, etc."
-              echo "SPLIT_CREATED=true" >> $GITHUB_ENV
-              echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
-              echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-              
-              # Add all split files and reassemble script to git
-              for file in ${BASE_NAME}.zip ${BASE_NAME}.z[0-9][0-9] reassemble_${TIMESTAMP}.sh; do
-                if [ -f "$file" ]; then
-                  git add "$file" 2>/dev/null || true
-                fi
-              done
-            else
-              echo "✅ File size is $(($FILE_SIZE/1048576))MB, no splitting needed"
-              echo "SPLIT_CREATED=false" >> $GITHUB_ENV
-              echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
-              echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-              git add "$FULL_ZIP"
-            fi
-          else
-            EMPTY_ZIP="empty_${TIMESTAMP}.zip"
-            echo "No images found" > result.txt
-            zip "$EMPTY_ZIP" result.txt
-            echo "SPLIT_CREATED=false" >> $GITHUB_ENV
-            echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
-            echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-            git add "$EMPTY_ZIP"
-          fi
-
-      - name: 💾 Push to repository
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          
-          # Pull latest changes first to avoid conflicts
-          echo "🔄 Pulling latest changes from remote..."
-          git pull origin ${{ github.ref_name }} --no-rebase --allow-unrelated-histories || true
-          
-          # Add all relevant files (in case they weren't added in previous step)
-          if [ "${{ env.SPLIT_CREATED }}" = "true" ]; then
-            # Add split files
-            for file in ${{ env.BASE_NAME }}.zip ${{ env.BASE_NAME }}.z[0-9][0-9] reassemble_${{ env.TIMESTAMP }}.sh; do
-              if [ -f "$file" ]; then
-                git add "$file" 2>/dev/null || true
+            for zip_file in $(cat zip_files.txt); do
+              if [ -f "$zip_file" ]; then
+                git add "$zip_file" || true
               fi
             done
-          fi
-          
-          # Check if there are changes to commit
-          if git diff --staged --quiet; then
-            echo "ℹ️ No new files to commit"
-          else
-            echo "📝 Committing files..."
-            git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${{ github.event.inputs.max_results }} images)"
             
-            # Push to repository with force option as fallback
-            echo "🚀 Pushing to remote..."
-            if ! git push origin HEAD:${{ github.ref_name }}; then
-              echo "⚠️ Push failed, trying with force lease..."
-              git push --force-with-lease origin HEAD:${{ github.ref_name }}
-            fi
-          fi
-          
-          # Print summary
-          echo ""
-          echo "========================================"
-          echo "📊 SUMMARY"
-          echo "========================================"
-          if [ "${{ env.SPLIT_CREATED }}" = "true" ]; then
-            echo "✅ Files were split into multiple parts (95MB each)"
-            echo "📁 Split files: ${{ env.BASE_NAME }}.zip, ${{ env.BASE_NAME }}.z01, etc."
-            echo ""
-            echo "🔧 To reassemble the files:"
-            echo "   bash reassemble_${{ env.TIMESTAMP }}.sh"
-            echo "   # Or manually:"
-            echo "   zip -s 0 ${{ env.BASE_NAME }}.zip --out complete.zip"
-            echo "   unzip complete.zip"
+            git add downloads/info.json || true
+            git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${#zip_files} parts)"
+            git push origin HEAD:${{ github.ref_name }} || true
           else
-            echo "✅ Single zip file created: ${{ env.BASE_NAME }}.zip"
+            echo "⚠️ No zip files found to upload"
           fi
-          echo "========================================"
+
+      - name: 📊 Summary
+        run: |
+          echo "## 🎨 Pinterest Download Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Search Term:** ${{ github.event.inputs.search_query }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Max Results:** ${{ github.event.inputs.max_results }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "zip_files.txt" ]; then
+            TOTAL_SIZE=0
+            FILE_COUNT=$(cat zip_files.txt | wc -l)
+            echo "**ZIP Files Created:** $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+            
+            while IFS= read -r zip_file; do
+              if [ -f "$zip_file" ]; then
+                SIZE=$(du -h "$zip_file" | cut -f1)
+                echo "| \`$zip_file\` | $SIZE |" >> $GITHUB_STEP_SUMMARY
+                TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$zip_file")))
+              fi
+            done < zip_files.txt
+            
+            TOTAL_MB=$((TOTAL_SIZE / 1024 / 1024))
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Download Size:** ${TOTAL_MB} MB" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Images are available in the **Releases** section and in the repository files." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ No images were downloaded successfully." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Cleanup old releases (optional)
+        run: |
+          # Keep only last 10 releases to save space
+          gh release list --limit 20 --repo ${{ github.repository }} | tail -n +11 | awk '{print $1}' | while read release; do
+            echo "🗑️ Deleting old release: $release"
+            gh release delete "$release" --yes --repo ${{ github.repository }} || true
+          done
+        continue-on-error: true

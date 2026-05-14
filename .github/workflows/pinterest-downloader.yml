@@ -203,23 +203,105 @@ jobs:
           
           python pinterest_final.py
 
-      - name: 📦 Create ZIP
+      - name: 📦 Create ZIP with splitting if >95MB
         run: |
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          BASE_NAME="pinterest_${TIMESTAMP}"
+          
           if [ -d "downloads" ] && [ "$(ls -A downloads | grep -E '\.(jpg|png)$')" ]; then
-            ZIP_NAME="pinterest_$(date +'%Y%m%d_%H%M%S').zip"
-            zip -r "$ZIP_NAME" downloads/
-            echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+            # First create the full zip
+            FULL_ZIP="${BASE_NAME}.zip"
+            zip -r "$FULL_ZIP" downloads/
+            
+            # Check file size in bytes (95MB = 99614720 bytes)
+            FILE_SIZE=$(stat -c%s "$FULL_ZIP")
+            MAX_SIZE=99614720  # 95MB in bytes
+            
+            if [ $FILE_SIZE -gt $MAX_SIZE ]; then
+              echo "📦 File size is $(($FILE_SIZE/1048576))MB, splitting into parts..."
+              
+              # Split the zip file into 95MB parts
+              zip -s 95m "$FULL_ZIP" --out "${BASE_NAME}_split.zip"
+              rm "$FULL_ZIP"
+              
+              # Rename split files to more readable names
+              mv "${BASE_NAME}_split.z01" "${BASE_NAME}.z01" 2>/dev/null || true
+              mv "${BASE_NAME}_split.z02" "${BASE_NAME}.z02" 2>/dev/null || true
+              mv "${BASE_NAME}_split.z03" "${BASE_NAME}.z03" 2>/dev/null || true
+              mv "${BASE_NAME}_split.z04" "${BASE_NAME}.z04" 2>/dev/null || true
+              mv "${BASE_NAME}_split.z05" "${BASE_NAME}.z05" 2>/dev/null || true
+              mv "${BASE_NAME}_split.zip" "${BASE_NAME}.zip" 2>/dev/null || true
+              
+              # Create a helper script to reassemble
+              cat > reassemble.sh << 'SCRIPT'
+              #!/bin/bash
+              echo "To reassemble the split zip files, run:"
+              echo "zip -s 0 ${BASE_NAME}.zip --out ${BASE_NAME}_complete.zip"
+              echo "Then extract the complete zip file"
+              SCRIPT
+              chmod +x reassemble.sh
+              
+              echo "✅ Created split archive: ${BASE_NAME}.zip, ${BASE_NAME}.z01, etc."
+              echo "SPLIT_CREATED=true" >> $GITHUB_ENV
+              echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
+              
+              # Add all split files and reassemble script to git
+              for file in ${BASE_NAME}.zip ${BASE_NAME}.z[0-9][0-9] reassemble.sh; do
+                if [ -f "$file" ]; then
+                  git add "$file" 2>/dev/null || true
+                fi
+              done
+            else
+              echo "✅ File size is $(($FILE_SIZE/1048576))MB, no splitting needed"
+              echo "SPLIT_CREATED=false" >> $GITHUB_ENV
+              echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
+              git add "$FULL_ZIP"
+            fi
           else
-            ZIP_NAME="empty_$(date +'%Y%m%d_%H%M%S').zip"
+            EMPTY_ZIP="empty_${TIMESTAMP}.zip"
             echo "No images found" > result.txt
-            zip "$ZIP_NAME" result.txt
-            echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+            zip "$EMPTY_ZIP" result.txt
+            echo "SPLIT_CREATED=false" >> $GITHUB_ENV
+            echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
+            git add "$EMPTY_ZIP"
           fi
 
-      - name: 💾 Push
+      - name: 💾 Push to repository
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add "${{ env.ZIP_NAME }}" || true
-          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }}"
-          git push origin HEAD:${{ github.ref_name }} || true
+          
+          # Add all relevant files
+          if [ "${{ env.SPLIT_CREATED }}" = "true" ]; then
+            # Add split files
+            for file in ${{ env.BASE_NAME }}.zip ${{ env.BASE_NAME }}.z[0-9][0-9] reassemble.sh; do
+              if [ -f "$file" ]; then
+                git add "$file" 2>/dev/null || true
+              fi
+            done
+          fi
+          
+          # Commit if there are changes
+          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${{ github.event.inputs.max_results }} images)"
+          
+          # Push to repository
+          git push origin HEAD:${{ github.ref_name }} || echo "⚠️ Push failed, but files are saved locally"
+          
+          # Print summary
+          echo ""
+          echo "========================================"
+          echo "📊 SUMMARY"
+          echo "========================================"
+          if [ "${{ env.SPLIT_CREATED }}" = "true" ]; then
+            echo "✅ Files were split into multiple parts (95MB each)"
+            echo "📁 Split files: ${{ env.BASE_NAME }}.zip, ${{ env.BASE_NAME }}.z01, etc."
+            echo ""
+            echo "🔧 To reassemble the files:"
+            echo "   bash reassemble.sh"
+            echo "   # Or manually:"
+            echo "   zip -s 0 ${{ env.BASE_NAME }}.zip --out complete.zip"
+            echo "   unzip complete.zip"
+          else
+            echo "✅ Single zip file created"
+          fi
+          echo "========================================"

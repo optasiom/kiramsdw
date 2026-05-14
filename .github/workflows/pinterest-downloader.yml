@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # Fetch all history to avoid sync issues
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -233,20 +234,21 @@ jobs:
               mv "${BASE_NAME}_split.zip" "${BASE_NAME}.zip" 2>/dev/null || true
               
               # Create a helper script to reassemble
-              cat > reassemble.sh << 'SCRIPT'
+              cat > reassemble_${TIMESTAMP}.sh << 'SCRIPT'
               #!/bin/bash
               echo "To reassemble the split zip files, run:"
               echo "zip -s 0 ${BASE_NAME}.zip --out ${BASE_NAME}_complete.zip"
               echo "Then extract the complete zip file"
               SCRIPT
-              chmod +x reassemble.sh
+              chmod +x reassemble_${TIMESTAMP}.sh
               
               echo "✅ Created split archive: ${BASE_NAME}.zip, ${BASE_NAME}.z01, etc."
               echo "SPLIT_CREATED=true" >> $GITHUB_ENV
               echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
+              echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
               
               # Add all split files and reassemble script to git
-              for file in ${BASE_NAME}.zip ${BASE_NAME}.z[0-9][0-9] reassemble.sh; do
+              for file in ${BASE_NAME}.zip ${BASE_NAME}.z[0-9][0-9] reassemble_${TIMESTAMP}.sh; do
                 if [ -f "$file" ]; then
                   git add "$file" 2>/dev/null || true
                 fi
@@ -255,6 +257,7 @@ jobs:
               echo "✅ File size is $(($FILE_SIZE/1048576))MB, no splitting needed"
               echo "SPLIT_CREATED=false" >> $GITHUB_ENV
               echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
+              echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
               git add "$FULL_ZIP"
             fi
           else
@@ -263,6 +266,7 @@ jobs:
             zip "$EMPTY_ZIP" result.txt
             echo "SPLIT_CREATED=false" >> $GITHUB_ENV
             echo "BASE_NAME=$BASE_NAME" >> $GITHUB_ENV
+            echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
             git add "$EMPTY_ZIP"
           fi
 
@@ -271,21 +275,34 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # Add all relevant files
+          # Pull latest changes first to avoid conflicts
+          echo "🔄 Pulling latest changes from remote..."
+          git pull origin ${{ github.ref_name }} --no-rebase --allow-unrelated-histories || true
+          
+          # Add all relevant files (in case they weren't added in previous step)
           if [ "${{ env.SPLIT_CREATED }}" = "true" ]; then
             # Add split files
-            for file in ${{ env.BASE_NAME }}.zip ${{ env.BASE_NAME }}.z[0-9][0-9] reassemble.sh; do
+            for file in ${{ env.BASE_NAME }}.zip ${{ env.BASE_NAME }}.z[0-9][0-9] reassemble_${{ env.TIMESTAMP }}.sh; do
               if [ -f "$file" ]; then
                 git add "$file" 2>/dev/null || true
               fi
             done
           fi
           
-          # Commit if there are changes
-          git diff --staged --quiet || git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${{ github.event.inputs.max_results }} images)"
-          
-          # Push to repository
-          git push origin HEAD:${{ github.ref_name }} || echo "⚠️ Push failed, but files are saved locally"
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "ℹ️ No new files to commit"
+          else
+            echo "📝 Committing files..."
+            git commit -m "📸 Pinterest: ${{ github.event.inputs.search_query }} (${{ github.event.inputs.max_results }} images)"
+            
+            # Push to repository with force option as fallback
+            echo "🚀 Pushing to remote..."
+            if ! git push origin HEAD:${{ github.ref_name }}; then
+              echo "⚠️ Push failed, trying with force lease..."
+              git push --force-with-lease origin HEAD:${{ github.ref_name }}
+            fi
+          fi
           
           # Print summary
           echo ""
@@ -297,11 +314,11 @@ jobs:
             echo "📁 Split files: ${{ env.BASE_NAME }}.zip, ${{ env.BASE_NAME }}.z01, etc."
             echo ""
             echo "🔧 To reassemble the files:"
-            echo "   bash reassemble.sh"
+            echo "   bash reassemble_${{ env.TIMESTAMP }}.sh"
             echo "   # Or manually:"
             echo "   zip -s 0 ${{ env.BASE_NAME }}.zip --out complete.zip"
             echo "   unzip complete.zip"
           else
-            echo "✅ Single zip file created"
+            echo "✅ Single zip file created: ${{ env.BASE_NAME }}.zip"
           fi
           echo "========================================"

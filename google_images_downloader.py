@@ -1,6 +1,7 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
 import os
 import json
 from urllib.request import Request, urlopen
@@ -19,20 +20,33 @@ def main():
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     
-    # تنظیمات Firefox برای حالت headless (بدون رابط گرافیکی)
+    # تنظیمات Firefox برای حالت headless
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    # مسیر مستقیم به Firefox
+    options.binary_location = "/usr/bin/firefox"
+    
+    # تنظیم Service برای geckodriver
+    service = Service(executable_path="/usr/local/bin/geckodriver")
+    
+    print("🚀 در حال راه‌اندازی Firefox...")
+    driver = webdriver.Firefox(options=options, service=service)
     
     url = f"https://www.google.com/search?q={searchtext}&source=lnms&tbm=isch"
-    driver = webdriver.Firefox(options=options)
+    print(f"🌐 دسترسی به: {url}")
     driver.get(url)
+    time.sleep(5)
     
-    # بستن پنجره کوکی اگر ظاهر شد
+    # بستن پنجره کوکی
     try:
         cookie_button = driver.find_element(By.XPATH, "//button[contains(.,'Accept all') or contains(.,'I agree')]")
         cookie_button.click()
         time.sleep(2)
+        print("✅ کوکی‌ها بسته شد")
     except:
         pass
     
@@ -44,22 +58,24 @@ def main():
     downloaded_img_count = 0
     
     # اسکرول و کلیک روی دکمه "نمایش موارد بیشتر"
-    for _ in range(number_of_scrolls):
+    for scroll_num in range(number_of_scrolls):
+        print(f"📜 اسکرول {scroll_num + 1}/{number_of_scrolls}...")
         for __ in range(10):
             driver.execute_script("window.scrollBy(0, 1000000)")
             time.sleep(0.2)
-        time.sleep(0.5)
+        time.sleep(1)
         try:
             show_more = driver.find_element(By.XPATH, "//input[@value='Show more results']")
             show_more.click()
+            print("✅ کلیک روی دکمه 'نمایش موارد بیشتر'")
             time.sleep(2)
         except Exception as e:
-            print(f"Less images found or no more button: {e}")
+            print(f"⚠️ دکمه بیشتری یافت نشد: {e}")
             break
     
     # پیدا کردن تصاویر
     images = driver.find_elements(By.XPATH, '//div[contains(@class,"rg_meta")]')
-    print(f"Total images found: {len(images)}\n")
+    print(f"\n📸 تعداد کل تصاویر پیدا شده: {len(images)}")
     
     for img in images:
         img_count += 1
@@ -70,11 +86,11 @@ def main():
             
             if not img_url:
                 continue
-                
-            print(f"Downloading image {img_count}: {img_url}")
             
             if img_type not in extensions:
                 img_type = "jpg"
+            
+            print(f"🖼️ دانلود تصویر {img_count}: {img_url[:80]}...")
             
             req = Request(img_url, headers=headers)
             raw_img = urlopen(req, timeout=30).read()
@@ -86,15 +102,20 @@ def main():
                 f.write(raw_img)
             
             downloaded_img_count += 1
-            print(f"✅ Downloaded: {filename}")
+            print(f"✅ تصویر {downloaded_img_count} ذخیره شد: {filename}")
             
         except Exception as e:
-            print(f"Download failed for image {img_count}: {e}")
+            print(f"❌ خطا در دانلود تصویر {img_count}: {e}")
         
         if downloaded_img_count >= num_requested:
             break
     
-    print(f"\n📊 Total downloaded: {downloaded_img_count}/{img_count}")
+    print(f"\n{'='*50}")
+    print(f"📊 گزارش نهایی:")
+    print(f"✅ دانلود موفق: {downloaded_img_count}")
+    print(f"📸 کل تصاویر پردازش شده: {img_count}")
+    print(f"{'='*50}")
+    
     driver.quit()
 
 if __name__ == "__main__":
